@@ -421,6 +421,7 @@ class KlikTokenDeployer:
         Examples:
         "@DeployOnKlik $MEME" -> {symbol: "MEME", name: "MEME"}
         "@DeployOnKlik $DOG - DogeCoin" -> {symbol: "DOG", name: "DogeCoin"}
+        "@DeployOnKlik $CAT + CatCoin" -> {symbol: "CAT", name: "CatCoin"}
         "@DeployOnKlik PEPE" -> None (no $ symbol - rejected)
         """
         # Remove mentions and clean up
@@ -436,11 +437,11 @@ class KlikTokenDeployer:
             
         symbol = symbol_match.group(1).upper()
         
-        # Look for name after a dash, but stop at URLs or mentions
-        name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–]\s*([^@\s]+(?:\s+[^@\s]+)*?)(?:\s+https?://|\s+@|\s*$)', text)
+        # Look for name after a dash or plus sign, but stop at URLs or mentions
+        name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–+]\s*([^@\s]+(?:\s+[^@\s]+)*?)(?:\s+https?://|\s+@|\s*$)', text)
         if not name_match:
             # Try simpler pattern without URL/mention check
-            name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–]\s*([^@\n]+?)(?:\s+https?://|\s*$)', text)
+            name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–+]\s*([^@\n]+?)(?:\s+https?://|\s*$)', text)
         
         if name_match:
             name = name_match.group(1).strip()
@@ -1411,7 +1412,7 @@ You sent: Missing $"""
             # Parse the tweet
             token_info = self.parse_tweet_for_token(tweet_text)
             if not token_info:
-                return "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name"
+                return "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
             
             # Get image - prioritize deployment tweet's own image over parent tweet
             image_url = None
