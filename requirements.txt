@@ -1,0 +1,32 @@
+# Klik Finance Token Deployment System Requirements
+
+# Blockchain & Web3
+web3==6.15.1
+eth-account==0.10.0
+
+# Environment & Configuration
+python-dotenv==1.0.0
+
+# HTTP & API
+aiohttp==3.9.1
+requests==2.31.0
+websockets==12.0  # For twitterapi.io WebSocket connection
+requests-oauthlib==1.3.1  # For Twitter OAuth 1.0a authentication
+
+# Twitter API (for future Twitter integration)
+tweepy==4.16.0
+
+# Telegram Bot
+python-telegram-bot==21.0
+
+# Database
+# sqlite3 is built into Python
+
+# Async support
+asyncio-mqtt==0.16.1  # if needed for real-time features
+
+# Playwright (already used by main_fast.py)
+playwright==1.41.0
+
+# Utilities
+python-dateutil==2.8.2 
