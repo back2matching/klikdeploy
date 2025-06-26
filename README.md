@@ -433,7 +433,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 <div align="center">
 
-**Built with ❤️ for the Ethereum community**
+**Built with ❤️ for the Ethereum community** 
 
 [Website](https://klik.finance) • [Twitter](https://twitter.com/DeployOnKlik) • [Telegram](https://t.me/DeployOnKlik)
 

@@ -1412,7 +1412,13 @@ You sent: Missing $"""
             # Parse the tweet
             token_info = self.parse_tweet_for_token(tweet_text)
             if not token_info:
-                return "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
+                # Send helpful Twitter reply about the format error
+                error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
+                
+                # Send Twitter reply to help the user
+                await self.send_twitter_reply_format_error(tweet_id, username, tweet_text)
+                
+                return error_msg
             
             # Get image - prioritize deployment tweet's own image over parent tweet
             image_url = None
@@ -1970,6 +1976,80 @@ Info & deposits: t.me/DeployOnKlik"""
             
         except Exception as e:
             self.logger.error(f"Error sending instruction reply: {e}")
+            return False
+
+    async def send_twitter_reply_format_error(self, tweet_id: str, username: str, tweet_text: str) -> bool:
+        """Reply with helpful format instructions when user uses wrong format"""
+        try:
+            # SAFETY: Check if this is from the bot itself
+            if username.lower() == self.bot_username.lower():
+                self.logger.warning(f"Skipping format error reply to own tweet from @{username}")
+                return False
+            
+            # Check if we have all OAuth 1.0a credentials
+            api_key = os.getenv('TWITTER_API_KEY')
+            api_secret = os.getenv('TWITTER_API_SECRET')
+            access_token = os.getenv('TWITTER_ACCESS_TOKEN')
+            access_token_secret = os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
+            
+            if not all([api_key, api_secret, access_token, access_token_secret]):
+                self.logger.warning("Twitter OAuth credentials not complete - skipping format error reply")
+                return False
+            
+            # Analyze what went wrong
+            cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip()
+            
+            # Create helpful reply based on what they did wrong
+            if '$' not in tweet_text:
+                reply_text = f"""@{username} Missing $ symbol!
+
+✅ Correct: @DeployOnKlik $TICKER
+✅ Also OK: @DeployOnKlik $TICKER - Name
+✅ Also OK: @DeployOnKlik $TICKER + Name
+
+You sent: "{cleaned_text[:50]}{"..." if len(cleaned_text) > 50 else ""}" """
+            else:
+                # They have $ but something else is wrong
+                reply_text = f"""@{username} Invalid format detected!
+
+✅ Use: @DeployOnKlik $TICKER
+✅ Or: @DeployOnKlik $TICKER - Token Name
+✅ Or: @DeployOnKlik $TICKER + Token Name
+
+Symbol must be 1-10 letters/numbers only."""
+            
+            # Use tweepy
+            import tweepy
+            
+            try:
+                client = tweepy.Client(
+                    consumer_key=api_key,
+                    consumer_secret=api_secret,
+                    access_token=access_token,
+                    access_token_secret=access_token_secret
+                )
+                
+                response = client.create_tweet(
+                    text=reply_text,
+                    in_reply_to_tweet_id=tweet_id
+                )
+                
+                if response.data:
+                    self.logger.info(f"✅ Format error reply sent! Tweet ID: {response.data['id']}")
+                    print(f"📱 Sent format help reply to @{username}")
+                    return True
+                else:
+                    return False
+                    
+            except tweepy.TooManyRequests:
+                self.logger.error("Rate limit reached for Twitter replies")
+                return False
+            except Exception as e:
+                self.logger.error(f"Tweepy error sending format reply: {e}")
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"Error sending format error reply: {e}")
             return False
 
 async def main(mode: str = "realtime"):
