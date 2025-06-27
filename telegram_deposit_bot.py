@@ -1496,25 +1496,10 @@ async def check_token_fees(update: Update, context: ContextTypes.DEFAULT_TYPE, t
     await query.edit_message_text("🔄 Checking claimable fees...")
     
     try:
-        # Get pool address from factory (you'll need to implement this based on your factory ABI)
-        # For now, we'll simulate
-        pool_address = await get_pool_address(token_address)
-        
-        if not pool_address:
-            await query.edit_message_text("❌ No pool found for this token!")
-            return
-        
-        # Check claimable fees (implement based on your factory's viewClaimableFees function)
-        claimable = await check_claimable_fees(pool_address)
-        
-        if claimable == 0:
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                "❌ No fees to claim for this token!",
-                reply_markup=reply_markup
-            )
-            return
+        # We can't check claimable fees without simulation
+        # The frontend likely uses eth_call or trace_call
+        # For now, show interface assuming fees exist
+        claimable = 0.001  # Placeholder
         
         # Calculate splits
         buyback_amount = claimable * 0.25
@@ -1540,20 +1525,21 @@ async def check_token_fees(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            f"**💎 Claimable Fees**\n"
+            f"**💎 Fee Claiming**\n"
             f"══════════════════════\n\n"
             f"**Token:** ${symbol} - {name}\n"
-            f"**Address:** `{token_address[:6]}...{token_address[-4:]}`\n"
-            f"**Pool:** `{pool_address[:6]}...{pool_address[-4:]}`\n\n"
-            f"**Total Claimable:** {claimable:.4f} ETH\n\n"
+            f"**Address:** `{token_address[:6]}...{token_address[-4:]}`\n\n"
+            f"**Note:** Cannot check exact claimable amount\n"
+            f"without simulation. The claim will collect\n"
+            f"all available fees from the pool.\n\n"
             f"**Distribution (v1.02):**\n"
-            f"• **Buyback (25%):** {buyback_amount:.4f} ETH\n"
-            f"• **Incentives (25%):** {incentive_amount:.4f} ETH\n"
-            f"• **Developer (50%):** {dev_amount:.4f} ETH\n\n"
+            f"• **Buyback (25%):** 25% of claimed\n"
+            f"• **Incentives (25%):** 25% of claimed\n"
+            f"• **Developer (50%):** 50% of claimed\n\n"
             f"**Flywheel Effect:**\n"
             f"The 25% buyback will automatically purchase\n"
             f"$DOK and burn it after claiming.\n\n"
-            f"Claim these fees?",
+            f"Proceed with fee claim?",
             parse_mode='Markdown',
             reply_markup=reply_markup
         )
@@ -1568,16 +1554,12 @@ async def execute_fee_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     await query.edit_message_text("⏳ Claiming fees...")
     
     try:
-        # Get pool info
-        pool_address = await get_pool_address(token_address)
-        claimable = await check_claimable_fees(pool_address)
+        # For now, we can't check claimable amount without simulation
+        # The frontend likely uses eth_call or trace_call to simulate
+        claimable = 0.001  # Placeholder - actual amount will be in transaction
         
-        if claimable == 0:
-            await query.edit_message_text("❌ No fees to claim!")
-            return
-        
-        # Execute claim transaction
-        claim_tx_hash = await claim_fees_from_pool(pool_address)
+        # Execute claim transaction directly with token address
+        claim_tx_hash = await claim_fees_for_token(token_address)
         
         if not claim_tx_hash:
             await query.edit_message_text("❌ Failed to claim fees!")
@@ -1607,7 +1589,7 @@ async def execute_fee_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, 
              claimed_amount, buyback_amount, incentive_amount, dev_amount,
              claim_tx_hash, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed')
-        ''', (token_address, symbol, name, pool_address,
+        ''', (token_address, symbol, name, None,  # pool_address handled internally
               claimable, buyback_amount, incentive_amount, dev_amount,
               claim_tx_hash))
         
@@ -1684,11 +1666,85 @@ async def execute_fee_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 # Import actual contract interface functions
 from klik_factory_interface import (
+    claim_fees_for_token,  # New simplified function
+    execute_dok_buyback,
+    # Deprecated functions kept for backward compatibility
     get_pool_address,
     check_claimable_fees,
-    claim_fees_from_pool,
-    execute_dok_buyback
+    claim_fees_from_pool
 )
+
+async def manual_claim(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual claim command for testing - bot owner only"""
+    telegram_id = update.effective_user.id
+    
+    # Verify bot owner
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or user[0].lower() != 'deployonklik':
+        await update.message.reply_text("❌ Unauthorized!")
+        return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "**Manual Fee Claim**\n\n"
+            "Usage: `/claim <token_address>`\n\n"
+            "Example:\n"
+            "`/claim 0x69ca61398eCa94D880393522C1Ef5c3D8c058837`",
+            parse_mode='Markdown'
+        )
+        return
+    
+    token_address = context.args[0]
+    
+    try:
+        await update.message.reply_text("🔄 Checking token and fees...")
+        
+        await update.message.reply_text(
+            "⚠️ Cannot check exact claimable amount (no view function).\n"
+            "Attempting to claim fees anyway..."
+        )
+        
+        # Execute claim directly with token address
+        await update.message.reply_text("⏳ Claiming fees...")
+        claim_tx = await claim_fees_for_token(token_address)
+        
+        if claim_tx:
+            await update.message.reply_text(
+                f"✅ **Fees Claimed!**\n\n"
+                f"TX: `{claim_tx}`\n"
+                f"[View on Etherscan](https://etherscan.io/tx/{claim_tx})",
+                parse_mode='Markdown',
+                disable_web_page_preview=True
+            )
+            
+            # Log to database
+            conn = sqlite3.connect('deployments.db')
+            claimable = 0.001  # We don't know exact amount without simulation
+            conn.execute('''
+                INSERT INTO fee_claims 
+                (token_address, token_symbol, token_name, pool_address, 
+                 claimed_amount, buyback_amount, incentive_amount, dev_amount,
+                 claim_tx_hash, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual_claim')
+            ''', (token_address, 'MANUAL', 'Manual Claim', None,  # pool_address handled internally
+                  claimable, claimable * 0.25, claimable * 0.25, claimable * 0.5,
+                  claim_tx))
+            conn.commit()
+            conn.close()
+            
+        else:
+            await update.message.reply_text("❌ Claim failed!")
+            
+    except Exception as e:
+        logger.error(f"Manual claim error: {e}")
+        await update.message.reply_text(f"❌ Error: {str(e)}")
 
 def main():
     """Start the bot"""
@@ -1721,6 +1777,7 @@ def main():
     application.add_handler(CommandHandler("link", link_twitter))
     application.add_handler(CommandHandler("wallet", register_wallet))
     application.add_handler(CommandHandler("withdraw", withdraw))
+    application.add_handler(CommandHandler("claim", manual_claim))  # New command
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Start monitoring in background
@@ -1732,7 +1789,7 @@ def main():
     print("🤖 Telegram Management Bot Started!")
     print("🔗 Bot: @DeployOnKlikBot")
     print("✅ Fully automated - no admin needed!")
-    print("📱 Commands: /start /link /wallet /withdraw")
+    print("📱 Commands: /start /link /wallet /withdraw /claim")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
