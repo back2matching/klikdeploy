@@ -501,15 +501,18 @@ class KlikTokenDeployer:
         realistic_gas_cost = float(self.w3.from_wei(current_gas_price * realistic_gas_units, 'ether'))
         
         # Debug: Log the values
-        self.logger.debug(f"Rate check gas: current_gas={current_gas_gwei:.2f} gwei")
-        self.logger.debug(f"Rate check cost: gas_cost={realistic_gas_cost:.4f} ETH for {realistic_gas_units/1e6:.1f}M units")
+        debug_rates = os.getenv('DEBUG_RATES', 'false').lower() == 'true'
+        if debug_rates:
+            self.logger.debug(f"Rate check gas: current_gas={current_gas_gwei:.2f} gwei")
+            self.logger.debug(f"Rate check cost: gas_cost={realistic_gas_cost:.4f} ETH for {realistic_gas_units/1e6:.1f}M units")
         
         # Check if user is a holder
         is_holder = self.check_holder_status(username)
         
         # Check if user qualifies for VIP tier (20k+ followers)
         is_vip = follower_count >= 20000
-        self.logger.debug(f"User @{username} has {follower_count:,} followers (VIP: {is_vip})")
+        if debug_rates:
+            self.logger.debug(f"User @{username} has {follower_count:,} followers (VIP: {is_vip})")
         
         # Calculate total cost
         # Bot owner doesn't pay fees on their own deployments!
@@ -519,7 +522,8 @@ class KlikTokenDeployer:
         
         # Get user balance
         user_balance = self.get_user_balance(username)
-        self.logger.debug(f"User @{username} balance: {user_balance:.4f} ETH")
+        if debug_rates:
+            self.logger.debug(f"User @{username} balance: {user_balance:.4f} ETH")
         
         # CRITICAL: Check bot's available balance for free/holder deployments
         available_bot_balance = self.get_available_balance()

@@ -137,8 +137,9 @@ class TwitterMonitor:
                                 print(f"   Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
                                 print(f"   Event timestamp: {datetime.fromtimestamp(event_timestamp/1000).strftime('%Y-%m-%d %H:%M:%S')}")
                                 
-                                # Log the full data structure for debugging
-                                self.logger.debug(f"Received tweet event: {json.dumps(data, indent=2)}")
+                                # Log full structure for debugging
+                                if os.getenv('DEBUG_TWEETS', 'false').lower() == 'true':
+                                    self.logger.debug(f"Received tweet event: {json.dumps(data, indent=2)}")
                                 
                                 for tweet in tweets:
                                     await self._process_tweet_from_websocket(tweet, event_timestamp)
@@ -237,8 +238,9 @@ class TwitterMonitor:
         except Exception as e:
             print(f"   ⚠️  Could not calculate delay: {e}")
         
-        # Debug log the tweet structure
-        self.logger.debug(f"Tweet structure: {json.dumps(tweet, indent=2)}")
+        # Log full structure for debugging
+        if os.getenv('DEBUG_TWEETS', 'false').lower() == 'true':
+            self.logger.debug(f"Tweet structure: {json.dumps(tweet, indent=2)}")
         
         # No follower check here - let the main deployer decide based on balance
         # Users with ETH can deploy with ANY follower count
@@ -291,40 +293,49 @@ class TwitterMonitor:
         """Extract media from WebSocket tweet format"""
         media_list = []
         try:
-            # Log the tweet keys to understand structure
-            self.logger.debug(f"Tweet keys: {list(tweet.keys())}")
-            
-            # Check for media in different possible locations
+            # Check all possible media locations with detailed logging
             media_sources = []
             
-            # Direct media field (TwitterAPI.io format)
+            # Only show detailed media debug logs if DEBUG_MEDIA is enabled
+            debug_media = os.getenv('DEBUG_MEDIA', 'false').lower() == 'true'
+            
+            if debug_media:
+                self.logger.debug(f"Tweet keys: {list(tweet.keys())}")
+            
+            # 1. Direct 'media' field
             if 'media' in tweet and isinstance(tweet['media'], list):
-                self.logger.debug(f"Found 'media' field with {len(tweet['media'])} items")
                 media_sources.extend(tweet['media'])
+                if debug_media:
+                    self.logger.debug(f"Found 'media' field with {len(tweet['media'])} items")
             
-            # Check attachments (Twitter v2 format)
+            # 2. Under 'attachments'
             if 'attachments' in tweet and 'media' in tweet['attachments']:
-                self.logger.debug(f"Found 'attachments.media' with {len(tweet['attachments']['media'])} items")
                 media_sources.extend(tweet['attachments']['media'])
+                if debug_media:
+                    self.logger.debug(f"Found 'attachments.media' with {len(tweet['attachments']['media'])} items")
             
-            # Check entities
+            # 3. Under 'entities'
             if 'entities' in tweet and 'media' in tweet['entities']:
-                self.logger.debug(f"Found 'entities.media' with {len(tweet['entities']['media'])} items")
                 media_sources.extend(tweet['entities']['media'])
+                if debug_media:
+                    self.logger.debug(f"Found 'entities.media' with {len(tweet['entities']['media'])} items")
             
-            # Check extended_entities (Twitter API v1 format - snake_case)
+            # 4. Under 'extended_entities'
             if 'extended_entities' in tweet and 'media' in tweet['extended_entities']:
-                self.logger.debug(f"Found 'extended_entities.media' with {len(tweet['extended_entities']['media'])} items")
                 media_sources.extend(tweet['extended_entities']['media'])
+                if debug_media:
+                    self.logger.debug(f"Found 'extended_entities.media' with {len(tweet['extended_entities']['media'])} items")
             
-            # Check extendedEntities (TwitterAPI.io format - camelCase)
+            # 5. Under 'extendedEntities' (different casing)
             if 'extendedEntities' in tweet and 'media' in tweet['extendedEntities']:
-                self.logger.debug(f"Found 'extendedEntities.media' with {len(tweet['extendedEntities']['media'])} items")
                 media_sources.extend(tweet['extendedEntities']['media'])
+                if debug_media:
+                    self.logger.debug(f"Found 'extendedEntities.media' with {len(tweet['extendedEntities']['media'])} items")
             
             # If no media found in standard locations, log the full structure
             if not media_sources:
-                self.logger.debug(f"No media found in standard locations. Tweet structure: {json.dumps(tweet, indent=2)}")
+                if os.getenv('DEBUG_TWEETS', 'false').lower() == 'true':
+                    self.logger.debug(f"No media found in standard locations. Tweet structure: {json.dumps(tweet, indent=2)}")
             
             # Process all found media
             for media in media_sources:
@@ -348,7 +359,7 @@ class TwitterMonitor:
                         })
                         self.logger.info(f"Found image in tweet: {url}")
             
-            if not media_list:
+            if not media_list and debug_media:
                 self.logger.debug(f"No images found in tweet data")
                 
         except Exception as e:
