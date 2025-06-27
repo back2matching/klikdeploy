@@ -16,7 +16,7 @@ import json
 import time
 import re
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 import logging
 from asyncio import Queue, Lock
 
