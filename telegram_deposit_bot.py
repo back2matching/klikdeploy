@@ -1493,18 +1493,23 @@ async def show_claimable_fees(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def check_token_fees(update: Update, context: ContextTypes.DEFAULT_TYPE, token_address: str):
     """Check claimable fees for a specific token"""
     query = update.callback_query
-    await query.edit_message_text("🔄 Checking claimable fees...")
+    await query.edit_message_text("🔄 Simulating fee claim...")
     
     try:
-        # We can't check claimable fees without simulation
-        # The frontend likely uses eth_call or trace_call
-        # For now, show interface assuming fees exist
-        claimable = 0.001  # Placeholder
+        # Import the simulate function
+        from klik_factory_interface import factory_interface
         
-        # Calculate splits
-        buyback_amount = claimable * 0.25
-        incentive_amount = claimable * 0.25
-        dev_amount = claimable * 0.5
+        # Simulate the fee claim
+        simulation = await factory_interface.simulate_fee_claim(token_address)
+        
+        if not simulation['success']:
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"❌ Error: {simulation.get('error', 'Simulation failed')}",
+                reply_markup=reply_markup
+            )
+            return
         
         # Get token info
         conn = sqlite3.connect('deployments.db')
@@ -1518,31 +1523,75 @@ async def check_token_fees(update: Update, context: ContextTypes.DEFAULT_TYPE, t
         symbol = token_info[0] if token_info else "UNKNOWN"
         name = token_info[1] if token_info else "Unknown Token"
         
-        keyboard = [
-            [InlineKeyboardButton(f"✅ Claim {claimable:.4f} ETH", callback_data=f"execute_claim_{token_address}")],
-            [InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            f"**💎 Fee Claiming**\n"
-            f"══════════════════════\n\n"
-            f"**Token:** ${symbol} - {name}\n"
-            f"**Address:** `{token_address[:6]}...{token_address[-4:]}`\n\n"
-            f"**Note:** Cannot check exact claimable amount\n"
-            f"without simulation. The claim will collect\n"
-            f"all available fees from the pool.\n\n"
-            f"**Distribution (v1.02):**\n"
-            f"• **Buyback (25%):** 25% of claimed\n"
-            f"• **Incentives (25%):** 25% of claimed\n"
-            f"• **Developer (50%):** 50% of claimed\n\n"
-            f"**Flywheel Effect:**\n"
-            f"The 25% buyback will automatically purchase\n"
-            f"$DOK and burn it after claiming.\n\n"
-            f"Proceed with fee claim?",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
+        # Check if we have a specific amount or just know fees exist
+        if isinstance(simulation.get('claimable_eth'), (int, float)):
+            claimable = simulation['claimable_eth']
+            
+            if claimable == 0:
+                keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(
+                    "❌ No fees to claim for this token!",
+                    reply_markup=reply_markup
+                )
+                return
+            
+            # Calculate splits
+            buyback_amount = claimable * 0.25
+            incentive_amount = claimable * 0.25
+            dev_amount = claimable * 0.5
+            
+            keyboard = [
+                [InlineKeyboardButton(f"✅ Claim {claimable:.4f} ETH", callback_data=f"execute_claim_{token_address}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"**💎 Claimable Fees**\n"
+                f"══════════════════════\n\n"
+                f"**Token:** ${symbol} - {name}\n"
+                f"**Address:** `{token_address[:6]}...{token_address[-4:]}`\n"
+                f"**Token ID:** {simulation.get('token_id', 'Unknown')}\n\n"
+                f"**Total Claimable:** {claimable:.4f} ETH\n\n"
+                f"**Distribution (v1.02):**\n"
+                f"• **Buyback (25%):** {buyback_amount:.4f} ETH\n"
+                f"• **Incentives (25%):** {incentive_amount:.4f} ETH\n"
+                f"• **Developer (50%):** {dev_amount:.4f} ETH\n\n"
+                f"**Flywheel Effect:**\n"
+                f"The 25% buyback will automatically purchase\n"
+                f"$DOK and burn it after claiming.\n\n"
+                f"Claim these fees?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            # We can't determine exact amount but fees might exist
+            message = simulation.get('message', 'Cannot determine exact claimable amount')
+            
+            keyboard = [
+                [InlineKeyboardButton("⚠️ Try Claim Anyway", callback_data=f"execute_claim_{token_address}")],
+                [InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"**💎 Fee Claiming**\n"
+                f"══════════════════════\n\n"
+                f"**Token:** ${symbol} - {name}\n"
+                f"**Address:** `{token_address[:6]}...{token_address[-4:]}`\n"
+                f"**Token ID:** {simulation.get('token_id', 'Unknown')}\n\n"
+                f"**Note:** {message}\n\n"
+                f"The claim will collect all available fees\n"
+                f"from the pool if any exist.\n\n"
+                f"**Distribution (v1.02):**\n"
+                f"• **Buyback:** 25% of claimed\n"
+                f"• **Incentives:** 25% of claimed\n"
+                f"• **Developer:** 50% of claimed\n\n"
+                f"Proceed with fee claim?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
         
     except Exception as e:
         logger.error(f"Error checking fees: {e}")
@@ -1667,6 +1716,7 @@ async def execute_fee_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 # Import actual contract interface functions
 from klik_factory_interface import (
     claim_fees_for_token,  # New simplified function
+    simulate_fee_claim,    # Simulation function
     execute_dok_buyback,
     # Deprecated functions kept for backward compatibility
     get_pool_address,
@@ -1704,14 +1754,43 @@ async def manual_claim(update: Update, context: ContextTypes.DEFAULT_TYPE):
     token_address = context.args[0]
     
     try:
-        await update.message.reply_text("🔄 Checking token and fees...")
+        await update.message.reply_text("🔄 Simulating fee claim...")
         
-        await update.message.reply_text(
-            "⚠️ Cannot check exact claimable amount (no view function).\n"
-            "Attempting to claim fees anyway..."
-        )
+        # Import and simulate
+        from klik_factory_interface import simulate_fee_claim
+        simulation = await simulate_fee_claim(token_address)
         
-        # Execute claim directly with token address
+        if not simulation['success']:
+            await update.message.reply_text(
+                f"❌ Simulation failed: {simulation.get('error', 'Unknown error')}"
+            )
+            return
+        
+        # Show simulation results
+        if isinstance(simulation.get('claimable_eth'), (int, float)):
+            claimable = simulation['claimable_eth']
+            
+            if claimable == 0:
+                await update.message.reply_text("❌ No fees to claim for this token!")
+                return
+            
+            await update.message.reply_text(
+                f"**💰 Simulation Results**\n\n"
+                f"Token ID: {simulation.get('token_id', 'Unknown')}\n"
+                f"Claimable: {claimable:.6f} ETH\n\n"
+                f"**V1.02 Distribution:**\n"
+                f"• Buyback: {claimable * 0.25:.6f} ETH\n"
+                f"• Incentives: {claimable * 0.25:.6f} ETH\n"
+                f"• Developer: {claimable * 0.5:.6f} ETH",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"⚠️ {simulation.get('message', 'Cannot determine exact amount')}\n"
+                f"Token ID: {simulation.get('token_id', 'Unknown')}"
+            )
+        
+        # Execute claim
         await update.message.reply_text("⏳ Claiming fees...")
         claim_tx = await claim_fees_for_token(token_address)
         
@@ -1726,7 +1805,7 @@ async def manual_claim(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Log to database
             conn = sqlite3.connect('deployments.db')
-            claimable = 0.001  # We don't know exact amount without simulation
+            claimable = simulation.get('claimable_eth', 0.001) if isinstance(simulation.get('claimable_eth'), (int, float)) else 0.001
             conn.execute('''
                 INSERT INTO fee_claims 
                 (token_address, token_symbol, token_name, pool_address, 

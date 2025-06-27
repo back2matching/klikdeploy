@@ -33,8 +33,54 @@ async def test_fee_claim():
     
     print(f"✅ Found tokenId: {token_id}")
     
+    # Simulate the claim first
+    print(f"\n2️⃣ Simulating fee claim to check available fees...")
+    
+    simulation = await factory_interface.simulate_fee_claim(dok_token)
+    
+    if simulation['success']:
+        if isinstance(simulation.get('claimable_eth'), (int, float)) and simulation['claimable_eth'] > 0:
+            print(f"\n💰 Simulation Results (using Alchemy simulateAssetChanges):")
+            print(f"   Claimable ETH: {simulation['claimable_eth']:.6f} ETH")
+            
+            if simulation.get('claimable_dok', 0) > 0:
+                print(f"   Claimable DOK: {simulation['claimable_dok']:,.2f} DOK")
+            
+            # Calculate splits
+            total_eth = simulation['claimable_eth']
+            buyback_amount = total_eth * 0.25
+            incentive_amount = total_eth * 0.25
+            dev_amount = total_eth * 0.5
+            
+            print(f"\n📊 V1.02 Distribution:")
+            print(f"   Buyback (25%): {buyback_amount:.6f} ETH")
+            print(f"   Incentives (25%): {incentive_amount:.6f} ETH")
+            print(f"   Developer (50%): {dev_amount:.6f} ETH")
+            
+            if 'gas_used' in simulation:
+                print(f"\n⛽ Estimated gas: {simulation['gas_used']}")
+                
+                # Convert hex gas to readable format
+                gas_amount = int(simulation['gas_used'], 16) if isinstance(simulation['gas_used'], str) and simulation['gas_used'].startswith('0x') else simulation['gas_used']
+                gas_price_gwei = 30  # Estimate 30 gwei
+                gas_cost_eth = (gas_amount * gas_price_gwei) / 1e9
+                gas_cost_usd = gas_cost_eth * 2500  # Estimate $2500/ETH
+                
+                print(f"   Gas: {gas_amount:,} units @ {gas_price_gwei} gwei")
+                print(f"   Cost: {gas_cost_eth:.6f} ETH (~${gas_cost_usd:.2f})")
+        elif simulation.get('claimable_eth') == 0:
+            print(f"\n❌ No fees available to claim")
+            print(f"   Token ID: {simulation.get('token_id', 'Unknown')}")
+        else:
+            print(f"\n⚠️  {simulation.get('message', 'Cannot determine exact amount')}")
+            if 'gas_estimate' in simulation:
+                print(f"   Gas estimate: {simulation['gas_estimate']:,}")
+                print(f"   This indicates fees exist but exact amount requires execution")
+    else:
+        print(f"\n❌ Simulation failed: {simulation.get('error', 'Unknown error')}")
+    
     # Show what the claim transaction would look like
-    print(f"\n2️⃣ Fee claim would execute:")
+    print(f"\n3️⃣ Fee claim would execute:")
     print(f"   Contract: {factory_interface.factory.address}")
     print(f"   Function: collectFees({token_id})")
     print(f"   From: {factory_interface.account.address}")
@@ -43,7 +89,7 @@ async def test_fee_claim():
     response = input("\n⚠️  Execute actual fee claim? (yes/no): ").lower()
     
     if response == 'yes':
-        print("\n3️⃣ Executing fee claim...")
+        print("\n4️⃣ Executing fee claim...")
         try:
             tx_hash = await factory_interface.claim_fees_for_token(dok_token)
             if tx_hash:
@@ -57,14 +103,53 @@ async def test_fee_claim():
     else:
         print("\n⏭️  Skipping actual execution")
 
-async def test_dok_price():
-    """Test DOK price fetching"""
-    print("\n🧪 Testing DOK Price Fetch")
-    print("="*50)
+async def simulate_custom_token():
+    """Simulate fee claim for a custom token"""
+    token_address = input("Enter token address to simulate: ").strip()
     
-    price = await factory_interface.get_dok_price_v3()
-    print(f"DOK Price: {price:.8f} ETH")
-    print(f"1 ETH = {1/price:,.0f} DOK")
+    if not token_address.startswith('0x') or len(token_address) != 42:
+        print("❌ Invalid token address format")
+        return
+    
+    print(f"\n🔍 Simulating fee claim for {token_address}...")
+    
+    simulation = await factory_interface.simulate_fee_claim(token_address)
+    
+    if simulation['success']:
+        if isinstance(simulation.get('claimable_eth'), (int, float)) and simulation['claimable_eth'] > 0:
+            print(f"\n💰 Simulation Results (using Alchemy simulateAssetChanges):")
+            print(f"   Token ID: {simulation.get('token_id', 'Unknown')}")
+            print(f"   Claimable ETH: {simulation['claimable_eth']:.6f} ETH")
+            
+            if simulation.get('claimable_dok', 0) > 0:
+                print(f"   Claimable DOK: {simulation['claimable_dok']:,.2f} DOK")
+            
+            # Calculate splits
+            total = simulation['claimable_eth']
+            print(f"\n📊 V1.02 Distribution:")
+            print(f"   Buyback (25%): {total * 0.25:.6f} ETH")
+            print(f"   Incentives (25%): {total * 0.25:.6f} ETH")
+            print(f"   Developer (50%): {total * 0.5:.6f} ETH")
+            
+            if 'gas_used' in simulation:
+                print(f"\n⛽ Estimated gas: {simulation['gas_used']}")
+                
+                # Convert hex gas to readable format
+                gas_amount = int(simulation['gas_used'], 16) if isinstance(simulation['gas_used'], str) and simulation['gas_used'].startswith('0x') else simulation['gas_used']
+                gas_price_gwei = 30  # Estimate 30 gwei
+                gas_cost_eth = (gas_amount * gas_price_gwei) / 1e9
+                gas_cost_usd = gas_cost_eth * 2500  # Estimate $2500/ETH
+                
+                print(f"   Gas: {gas_amount:,} units @ {gas_price_gwei} gwei")
+                print(f"   Cost: {gas_cost_eth:.6f} ETH (~${gas_cost_usd:.2f})")
+        elif simulation.get('claimable_eth') == 0:
+            print(f"\n❌ No fees available to claim")
+        else:
+            print(f"\n⚠️  {simulation.get('message', 'Cannot determine exact amount')}")
+            if 'gas_estimate' in simulation:
+                print(f"   Fees may exist but exact amount requires execution")
+    else:
+        print(f"\n❌ {simulation.get('error', 'Simulation failed')}")
 
 async def check_all_pools():
     """Check all recent pools"""
@@ -100,16 +185,54 @@ async def check_all_pools():
     except Exception as e:
         print(f"Error: {e}")
 
+async def test_small_buyback():
+    """Test a small manual buyback of DOK"""
+    print("\n🧪 Testing Small DOK Buyback")
+    print("="*50)
+    
+    amount_eth = 0.01
+    print(f"\nTesting buyback of {amount_eth} ETH worth of DOK...")
+    
+    # Get current DOK price
+    dok_price = await factory_interface.get_dok_price_v3()
+    expected_dok = amount_eth / dok_price
+    
+    print(f"\nCurrent DOK price: {dok_price:.8f} ETH")
+    print(f"Expected DOK from buyback: {expected_dok:,.2f} DOK")
+    print(f"Will be sent to burn address: 0x000000000000000000000000000000000000dEaD")
+    
+    response = input("\n⚠️  Execute buyback? (yes/no): ").lower()
+    
+    if response == 'yes':
+        print("\n🔄 Executing buyback...")
+        result = await factory_interface.execute_dok_buyback_v3(amount_eth, "manual_test")
+        
+        if result['success']:
+            print(f"✅ Buyback successful!")
+            print(f"   TX: {result['tx_hash']}")
+            print(f"   DOK burned: {result.get('dok_amount', expected_dok):,.2f}")
+            print(f"   View: https://etherscan.io/tx/{result['tx_hash']}")
+        else:
+            print(f"❌ Buyback failed: {result.get('error', 'Unknown error')}")
+    else:
+        print("\n⏭️  Skipping buyback")
+
 if __name__ == "__main__":
     print("Choose an option:")
     print("1. Test fee claim for DOK")
-    print("2. Check all recent pools")
+    print("2. Simulate fee claim for custom token")
+    print("3. Check all recent pools")
+    print("4. Test small DOK buyback (0.01 ETH)")
     
-    choice = input("\nEnter choice (1 or 2): ")
+    choice = input("\nEnter choice (1-4): ")
     
     if choice == "1":
         asyncio.run(test_fee_claim())
     elif choice == "2":
+        asyncio.run(simulate_custom_token())
+    elif choice == "3":
         asyncio.run(check_all_pools())
+    elif choice == "4":
+        asyncio.run(test_small_buyback())
     else:
         print("Invalid choice!") 

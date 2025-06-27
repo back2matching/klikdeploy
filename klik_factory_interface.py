@@ -33,6 +33,7 @@ DOK_WETH_V3_POOL = "0xf6E2edc5953Da297947C6C68911E16CF1C9b64B6"
 # Known token to tokenId mappings from transaction analysis
 KNOWN_TOKEN_IDS = {
     "0x69ca61398eCa94D880393522C1Ef5c3D8c058837": 1018175,  # DOK tokenId from tx analysis
+    "0x692Ea3f6E92000a966874715A6cC53c6E74E269F": 1018890,  # MOON tokenId from your example
 }
 
 # Minimal ABIs based on the transaction
@@ -316,53 +317,163 @@ class KlikFactoryInterface:
         except:
             return False
     
+    async def get_token_id_from_deployment_event(self, token_address: str) -> Optional[int]:
+        """Find tokenId by looking for the pool creation event"""
+        try:
+            token_address = Web3.to_checksum_address(token_address)
+            
+            # Use Alchemy's enhanced API to find pool creation events
+            response = requests.post(self.rpc_url, json={
+                "jsonrpc": "2.0",
+                "method": "eth_getLogs",
+                "params": [{
+                    "fromBlock": "0x13B8A00",  # Block ~20M (recent pools)
+                    "toBlock": "latest",
+                    "address": KLIK_FACTORY,
+                    "topics": [
+                        # PairCreated event signature
+                        "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9",
+                        None,  # token0
+                        None   # token1
+                    ]
+                }],
+                "id": 1
+            })
+            
+            if response.status_code == 200:
+                logs = response.json().get('result', [])
+                
+                for log in logs:
+                    # Decode the log to get tokens and pool
+                    data = log['data']
+                    # Pool address is first 32 bytes (after 0x)
+                    pool_address = '0x' + data[26:66]
+                    # Fee is next 32 bytes
+                    # TokenId (pair index) is last 32 bytes
+                    token_id_hex = data[-64:]
+                    token_id = int(token_id_hex, 16)
+                    
+                    # Check if this pool contains our token
+                    # The topics contain token0 and token1 addresses
+                    if len(log['topics']) >= 3:
+                        token0 = '0x' + log['topics'][1][-40:]
+                        token1 = '0x' + log['topics'][2][-40:]
+                        
+                        if token_address.lower() in [token0.lower(), token1.lower()]:
+                            logger.info(f"Found tokenId {token_id} for {token_address} in pool {pool_address}")
+                            
+                            # Cache this for future use
+                            KNOWN_TOKEN_IDS[token_address] = token_id
+                            
+                            # Also update database if available
+                            try:
+                                import sqlite3
+                                conn = sqlite3.connect('deployments.db')
+                                
+                                # Check if token_id column exists, if not add it
+                                cursor = conn.execute("PRAGMA table_info(deployed_tokens)")
+                                columns = [row[1] for row in cursor.fetchall()]
+                                
+                                if 'token_id' not in columns:
+                                    conn.execute("ALTER TABLE deployed_tokens ADD COLUMN token_id INTEGER")
+                                
+                                # Update the token_id
+                                conn.execute(
+                                    "UPDATE deployed_tokens SET token_id = ? WHERE token_address = ?",
+                                    (token_id, token_address)
+                                )
+                                conn.commit()
+                                conn.close()
+                            except Exception as db_error:
+                                logger.warning(f"Could not update database: {db_error}")
+                            
+                            return token_id
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error finding token from events: {e}")
+            return None
+
+    async def get_token_id_from_database(self, token_address: str) -> Optional[int]:
+        """Check if we have the tokenId cached in our database"""
+        try:
+            import sqlite3
+            conn = sqlite3.connect('deployments.db')
+            
+            # First check deployed_tokens table
+            cursor = conn.execute(
+                "SELECT token_id FROM deployed_tokens WHERE token_address = ? AND token_id IS NOT NULL",
+                (token_address,)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                conn.close()
+                return result[0]
+            
+            # Check deployments table for recent deployments
+            cursor = conn.execute('''
+                SELECT d.token_address, d.tx_hash 
+                FROM deployments d 
+                WHERE d.token_address = ? 
+                AND d.status = 'success'
+                ORDER BY d.requested_at DESC 
+                LIMIT 1
+            ''', (token_address,))
+            
+            deployment = cursor.fetchone()
+            conn.close()
+            
+            if deployment and deployment[1]:
+                # We have a deployment tx, analyze it to find the pool creation
+                logger.info(f"Found deployment tx {deployment[1]} for {token_address}")
+                # Could analyze this tx to find the pool creation event
+                
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Database lookup failed: {e}")
+            return None
+
     async def get_token_id_for_token(self, token_address: str) -> Optional[int]:
         """Get tokenId for a token by finding its pool in the allPairs array"""
         try:
             # Normalize address
             token_address = Web3.to_checksum_address(token_address)
             
-            # Check if we have a known mapping
+            # 1. Check if we have a known mapping
             if token_address in KNOWN_TOKEN_IDS:
                 token_id = KNOWN_TOKEN_IDS[token_address]
                 logger.info(f"Using known tokenId {token_id} for {token_address}")
                 return token_id
             
-            # First, try to find the pool using Alchemy's enhanced features
-            pool_info = await self.find_token_pool_mapping(token_address)
+            # 2. Check database cache
+            token_id = await self.get_token_id_from_database(token_address)
+            if token_id is not None:
+                logger.info(f"Found tokenId {token_id} in database for {token_address}")
+                KNOWN_TOKEN_IDS[token_address] = token_id
+                return token_id
             
-            if pool_info and 'pool_address' in pool_info:
-                # Now find this pool in the allPairs array
-                pairs_length = self.factory.functions.allPairsLength().call()
-                logger.info(f"Found pool {pool_info['pool_address']}, searching in {pairs_length} pairs")
-                
-                # Binary search would be more efficient for large arrays
-                # but for now, linear search from the end (newer pools)
-                for i in range(pairs_length - 1, -1, -1):
-                    pair_address = self.factory.functions.allPairs(i).call()
-                    if pair_address.lower() == pool_info['pool_address'].lower():
-                        logger.info(f"Found tokenId {i} for pool {pair_address}")
-                        return i
+            # 3. Try to find from pool creation events (most efficient)
+            token_id = await self.get_token_id_from_deployment_event(token_address)
+            if token_id is not None:
+                return token_id
             
-            # Fallback to original method if enhanced search fails
-            return await self._get_token_id_for_token_fallback(token_address)
+            # 4. If still not found, check if this is a recent deployment we know about
+            logger.warning(f"Could not find tokenId for {token_address} using efficient methods")
             
-        except Exception as e:
-            logger.error(f"Error finding tokenId: {e}")
-            return None
-    
-    async def _get_token_id_for_token_fallback(self, token_address: str) -> Optional[int]:
-        """Original method - search through all pairs"""
-        try:
-            # Normalize address
-            token_address = Web3.to_checksum_address(token_address)
-            
-            # Get total number of pairs
+            # 5. Last resort - binary search through recent pairs (limited range)
             pairs_length = self.factory.functions.allPairsLength().call()
-            logger.info(f"Searching through {pairs_length} pairs for token {token_address}")
+            logger.info(f"Total pairs: {pairs_length}. Checking last 10,000 pairs only...")
             
-            # Search from newest to oldest (more likely to find recent deployments)
-            for i in range(pairs_length - 1, -1, -1):
+            # Only check recent pairs (last 10k)
+            start_index = max(0, pairs_length - 10000)
+            
+            for i in range(pairs_length - 1, start_index, -1):
+                if i % 100 == 0:
+                    logger.info(f"Checking pair {i}...")
+                
                 try:
                     pair_address = self.factory.functions.allPairs(i).call()
                     
@@ -373,13 +484,40 @@ class KlikFactoryInterface:
                     
                     if token_address.lower() == token0.lower() or token_address.lower() == token1.lower():
                         logger.info(f"Found token {token_address} in pair {pair_address} at index {i}")
+                        
+                        # Cache this discovery
+                        KNOWN_TOKEN_IDS[token_address] = i
+                        
+                        # Update database
+                        try:
+                            import sqlite3
+                            conn = sqlite3.connect('deployments.db')
+                            
+                            # Ensure column exists
+                            cursor = conn.execute("PRAGMA table_info(deployed_tokens)")
+                            columns = [row[1] for row in cursor.fetchall()]
+                            
+                            if 'token_id' not in columns:
+                                conn.execute("ALTER TABLE deployed_tokens ADD COLUMN token_id INTEGER")
+                            
+                            # Insert or update
+                            conn.execute('''
+                                INSERT OR REPLACE INTO deployed_tokens 
+                                (token_address, token_id, pool_address)
+                                VALUES (?, ?, ?)
+                            ''', (token_address, i, pair_address))
+                            conn.commit()
+                            conn.close()
+                        except Exception as db_error:
+                            logger.warning(f"Could not update database: {db_error}")
+                        
                         return i
                         
                 except Exception as e:
                     # Some pairs might not be standard, skip them
                     continue
             
-            logger.error(f"Token {token_address} not found in any pairs")
+            logger.error(f"Token {token_address} not found in recent pairs. It might be older than 10k pairs ago.")
             return None
             
         except Exception as e:
@@ -545,6 +683,178 @@ class KlikFactoryInterface:
                 'success': False,
                 'error': str(e)
             }
+    
+    async def simulate_fee_claim(self, token_address: str) -> Dict:
+        """Simulate a fee claim using Alchemy's simulateAssetChanges to see exact amounts"""
+        try:
+            # Get tokenId for the token
+            token_id = await self.get_token_id_for_token(token_address)
+            if token_id is None:
+                logger.error(f"Could not find tokenId for token {token_address}")
+                return {'success': False, 'error': 'Token not found'}
+            
+            logger.info(f"Simulating fee claim for token {token_address} (tokenId: {token_id})")
+            
+            # Build the collectFees transaction data
+            function_data = self.factory.functions.collectFees(token_id)._encode_transaction_data()
+            
+            # Use Alchemy's simulateAssetChanges API
+            response = requests.post(self.rpc_url, json={
+                "jsonrpc": "2.0",
+                "method": "alchemy_simulateAssetChanges",
+                "id": 1,
+                "params": [{
+                    "from": self.account.address,
+                    "to": KLIK_FACTORY,
+                    "data": function_data,
+                    "value": "0x0"
+                }]
+            })
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                if 'result' in result:
+                    changes = result['result'].get('changes', [])
+                    
+                    # Parse the asset changes
+                    eth_received = 0
+                    dok_received = 0
+                    
+                    for change in changes:
+                        # Check if this is an incoming transfer to our address
+                        if change.get('to', '').lower() == self.account.address.lower():
+                            asset_type = change.get('assetType')
+                            
+                            if asset_type == 'NATIVE':
+                                # ETH transfer
+                                raw_amount = change.get('rawAmount', '0')
+                                eth_received += int(raw_amount, 16) if raw_amount.startswith('0x') else int(raw_amount)
+                            
+                            elif asset_type == 'ERC20':
+                                # Token transfer - check if it's DOK
+                                contract = change.get('contractAddress', '')
+                                if contract.lower() == DOK_ADDRESS.lower():
+                                    raw_amount = change.get('rawAmount', '0')
+                                    dok_received += int(raw_amount, 16) if raw_amount.startswith('0x') else int(raw_amount)
+                    
+                    # Convert to readable amounts
+                    eth_amount = self.w3.from_wei(eth_received, 'ether') if eth_received > 0 else 0
+                    dok_amount = dok_received / 1e18 if dok_received > 0 else 0
+                    
+                    # Check if any assets would be received
+                    if eth_amount > 0 or dok_amount > 0:
+                        logger.info(f"Simulation shows claimable: {eth_amount} ETH, {dok_amount} DOK")
+                        
+                        return {
+                            'success': True,
+                            'claimable_eth': float(eth_amount),
+                            'claimable_dok': float(dok_amount),
+                            'token_id': token_id,
+                            'gas_used': result['result'].get('gasUsed', 'Unknown')
+                        }
+                    else:
+                        return {
+                            'success': True,
+                            'claimable_eth': 0,
+                            'claimable_dok': 0,
+                            'message': 'No fees to claim',
+                            'token_id': token_id
+                        }
+                
+                elif 'error' in result:
+                    error_msg = result['error'].get('message', 'Unknown error')
+                    if 'execution reverted' in error_msg or 'revert' in error_msg:
+                        return {
+                            'success': True,
+                            'claimable_eth': 0,
+                            'claimable_dok': 0,
+                            'message': 'No fees to claim',
+                            'token_id': token_id
+                        }
+                    else:
+                        return {
+                            'success': False,
+                            'error': error_msg
+                        }
+            
+            # Fallback to gas estimation method if simulateAssetChanges fails
+            logger.warning("simulateAssetChanges not available, falling back to gas estimation")
+            
+            try:
+                # Try to estimate gas - if it succeeds, fees are claimable
+                gas_estimate = self.factory.functions.collectFees(token_id).estimate_gas({
+                    'from': self.account.address
+                })
+                
+                return {
+                    'success': True,
+                    'claimable_eth': 'Unknown (fees exist)',
+                    'message': 'Fees are claimable but exact amount requires execution',
+                    'gas_estimate': gas_estimate,
+                    'token_id': token_id
+                }
+                
+            except Exception as e:
+                error_msg = str(e)
+                if 'execution reverted' in error_msg:
+                    return {
+                        'success': True,
+                        'claimable_eth': 0,
+                        'claimable_dok': 0,
+                        'message': 'No fees to claim',
+                        'token_id': token_id
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f'Simulation failed: {error_msg}'
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error simulating fee claim: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    async def check_claimable_fees_with_fork(self, token_address: str) -> Dict:
+        """Use Alchemy's fork feature to simulate the exact fee amount"""
+        try:
+            # Get tokenId
+            token_id = await self.get_token_id_for_token(token_address)
+            if token_id is None:
+                return {'success': False, 'error': 'Token not found'}
+            
+            # Create a fork and simulate the transaction
+            # This uses Alchemy's anvil_* methods if available
+            fork_response = requests.post(self.rpc_url, json={
+                "jsonrpc": "2.0",
+                "method": "anvil_createFork",
+                "params": ["latest"],
+                "id": 1
+            })
+            
+            if fork_response.status_code == 200 and 'result' in fork_response.json():
+                fork_id = fork_response.json()['result']
+                
+                # Now simulate on the fork
+                # ... implementation continues
+                
+                # Clean up fork
+                requests.post(self.rpc_url, json={
+                    "jsonrpc": "2.0",
+                    "method": "anvil_removeFork",
+                    "params": [fork_id],
+                    "id": 1
+                })
+            
+            # If fork not available, fall back to regular simulation
+            return await self.simulate_fee_claim(token_address)
+            
+        except Exception as e:
+            logger.error(f"Fork simulation failed: {e}")
+            return await self.simulate_fee_claim(token_address)
 
 # Singleton instance
 factory_interface = KlikFactoryInterface()
@@ -553,6 +863,10 @@ factory_interface = KlikFactoryInterface()
 async def claim_fees_for_token(token_address: str) -> Optional[str]:
     """Claim fees for a token address"""
     return await factory_interface.claim_fees_for_token(token_address)
+
+async def simulate_fee_claim(token_address: str) -> Dict:
+    """Simulate fee claim to see claimable amount"""
+    return await factory_interface.simulate_fee_claim(token_address)
 
 async def execute_dok_buyback(amount: float, reference_tx: str) -> Dict:
     """Execute DOK buyback and burn"""

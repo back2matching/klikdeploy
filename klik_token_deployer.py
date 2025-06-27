@@ -227,7 +227,7 @@ class KlikTokenDeployer:
         # Optional configs
         self.bot_username = os.getenv('BOT_USERNAME', 'DeployOnKlik')
         self.max_gas_price_gwei = int(os.getenv('MAX_GAS_PRICE_GWEI', '50'))
-        self.gas_limit = int(os.getenv('GAS_LIMIT', '8500000'))  # Increased for safety
+        self.gas_limit = int(os.getenv('GAS_LIMIT', '6000000'))
         self.max_deploys_per_hour = int(os.getenv('MAX_DEPLOYS_PER_HOUR', '10'))
         self.max_deploys_per_user_per_day = int(os.getenv('MAX_DEPLOYS_PER_USER_PER_DAY', '3'))
         self.cooldown_minutes = int(os.getenv('COOLDOWN_MINUTES', '5'))
@@ -362,6 +362,21 @@ class KlikTokenDeployer:
                 )
             ''')
             
+            # Progressive cooldown tracking table
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS deployment_cooldowns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    free_deploys_7d INTEGER DEFAULT 0,
+                    last_free_deploy TIMESTAMP,
+                    cooldown_until TIMESTAMP,
+                    consecutive_days INTEGER DEFAULT 0,
+                    total_free_deploys INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_username_date 
                 ON deployments(username, requested_at)
@@ -439,6 +454,116 @@ class KlikTokenDeployer:
         available = total_balance - (protected_total * 1.05)  # 5% buffer
         
         return max(0, available)
+    
+    def check_progressive_cooldown(self, username: str) -> tuple[bool, str, int]:
+        """Check progressive cooldown for free deployments
+        
+        Returns:
+            tuple: (can_deploy, message, days_until_cooldown_ends)
+        """
+        now = datetime.now()
+        seven_days_ago = now - timedelta(days=7)
+        
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+            # Get or create cooldown record
+            cursor = conn.execute('''
+                SELECT free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys
+                FROM deployment_cooldowns 
+                WHERE LOWER(username) = LOWER(?)
+            ''', (username,))
+            
+            cooldown_data = cursor.fetchone()
+            
+            if not cooldown_data:
+                # First time user
+                conn.execute('''
+                    INSERT INTO deployment_cooldowns (username, free_deploys_7d, last_free_deploy, updated_at)
+                    VALUES (?, 0, ?, ?)
+                ''', (username.lower(), now, now))
+                return True, "First deployment allowed", 0
+            
+            free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys = cooldown_data
+            
+            # Check if currently in cooldown
+            if cooldown_until and cooldown_until > now:
+                days_left = (cooldown_until - now).days + 1
+                return False, f"Progressive cooldown active. {days_left} days remaining", days_left
+            
+            # Count free deployments in last 7 days (more accurate)
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at > ? 
+                AND status = 'success'
+                AND (
+                    token_address IN (
+                        SELECT token_address FROM deployments 
+                        WHERE status = 'success'
+                        GROUP BY username, requested_at::date
+                        HAVING COUNT(*) = 1
+                    )
+                )
+            ''', (username, seven_days_ago))
+            
+            actual_free_deploys_7d = cursor.fetchone()[0]
+            
+            # Update the count if different
+            if actual_free_deploys_7d != free_deploys_7d:
+                free_deploys_7d = actual_free_deploys_7d
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET free_deploys_7d = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (free_deploys_7d, now, username))
+            
+            # Check if they deployed yesterday (for consecutive days tracking)
+            yesterday = now.date() - timedelta(days=1)
+            if last_free_deploy and last_free_deploy.date() == yesterday:
+                # Consecutive day deployment
+                consecutive_days += 1
+            elif last_free_deploy and last_free_deploy.date() < yesterday:
+                # Reset consecutive days
+                consecutive_days = 0
+            
+            # Progressive cooldown logic
+            if free_deploys_7d >= 5:  # 5+ deploys in 7 days = heavy user
+                # Apply 30-day cooldown
+                cooldown_end = now + timedelta(days=30)
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (cooldown_end, consecutive_days, now, username))
+                return False, "Heavy usage detected. 30-day cooldown applied", 30
+                
+            elif free_deploys_7d >= 3:  # 3-4 deploys in 7 days = frequent user
+                # Apply 14-day cooldown
+                cooldown_end = now + timedelta(days=14)
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (cooldown_end, consecutive_days, now, username))
+                return False, "Frequent usage detected. 14-day cooldown applied", 14
+                
+            elif free_deploys_7d >= 2 and consecutive_days >= 2:  # 2 deploys + consecutive days
+                # Apply 7-day cooldown
+                cooldown_end = now + timedelta(days=7)
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (cooldown_end, consecutive_days, now, username))
+                return False, "Back-to-back deployments detected. 7-day cooldown applied", 7
+            
+            # Update last deployment time
+            conn.execute('''
+                UPDATE deployment_cooldowns 
+                SET consecutive_days = ?, updated_at = ?
+                WHERE LOWER(username) = LOWER(?)
+            ''', (consecutive_days, now, username))
+            
+            return True, f"Deployment allowed ({free_deploys_7d} in last 7 days)", 0
     
     async def generate_salt_and_address(self, token_name: str, token_symbol: str) -> Tuple[str, str]:
         """Generate salt using Klik Finance API and calculate predicted address"""
@@ -529,6 +654,11 @@ class KlikTokenDeployer:
             
         symbol = symbol_match.group(1).upper()
         
+        # BLOCK DOK TICKER - prevent spam of the bot's own token
+        if symbol == 'DOK':
+            self.logger.warning(f"Blocked DOK ticker deployment attempt from tweet: {tweet_text[:50]}...")
+            return None
+        
         # Look for name after a dash or plus sign, but stop at URLs or mentions
         name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–+]\s*([^@\s]+(?:\s+[^@\s]+)*?)(?:\s+https?://|\s+@|\s*$)', text)
         if not name_match:
@@ -593,8 +723,8 @@ class KlikTokenDeployer:
             return False, f"⏳ System limit reached ({self.max_deploys_per_hour} deploys/hour). Try again later."
         
         # Estimate deployment cost using realistic gas usage
-        # Use 8.5M units matching our safer gas limits
-        realistic_gas_units = 8_500_000
+        # Use 6.5M units as typical for Klik factory deployments
+        realistic_gas_units = 6_500_000
         # Use current gas price (same as preview) for consistency
         realistic_gas_cost = float(self.w3.from_wei(current_gas_price * realistic_gas_units, 'ether'))
         
@@ -655,6 +785,23 @@ class KlikTokenDeployer:
         
         # Minimum follower count for FREE deployments
         min_followers_for_free = int(os.getenv('MIN_FOLLOWER_COUNT', '1500'))
+        
+        # Check progressive cooldown for non-holders before allowing free deployment
+        if not is_holder and not (user_balance >= total_cost):  # Only for users seeking free deployment
+            can_deploy_free, cooldown_msg, cooldown_days = self.check_progressive_cooldown(username)
+            if not can_deploy_free:
+                # User is in progressive cooldown
+                if user_balance >= total_cost:
+                    # They can still pay to deploy
+                    return True, f"💰 Pay-per-deploy ({cooldown_msg.lower()}. Cost: {total_cost:.4f} ETH)"
+                else:
+                    # Cannot deploy at all
+                    return False, f"""⏳ Progressive cooldown active!
+
+{cooldown_msg}
+Wait {cooldown_days} days or deposit ETH to deploy now.
+
+Visit t.me/DeployOnKlik"""
         
         if likely_gas_gwei <= gas_limit_for_user:
             # Check follower count for free deployments
@@ -870,7 +1017,7 @@ Quick & easy deposits!"""
             
             # Use current gas price for balance check (same as preview)
             current_gas_price = self.w3.eth.gas_price
-            realistic_gas_units = 8_500_000  # Match our safer gas limit
+            realistic_gas_units = 6_500_000
             
             # Calculate expected cost (same as preview)
             expected_gas_cost = float(self.w3.from_wei(current_gas_price * realistic_gas_units, 'ether'))
@@ -879,25 +1026,8 @@ Quick & easy deposits!"""
             # For EIP-1559, also calculate max possible (for safety)
             latest_block = self.w3.eth.get_block('latest')
             base_fee = latest_block['baseFeePerGas']
-            
-            # Dynamic priority fee based on network conditions
-            # Use lower priority fee when base fee is low to save costs
-            if base_fee < self.w3.to_wei(1, 'gwei'):
-                # Very low gas - use minimal priority fee
-                max_priority_fee = self.w3.to_wei(0.1, 'gwei')
-            elif base_fee < self.w3.to_wei(5, 'gwei'):
-                # Low gas - use 0.25 gwei priority
-                max_priority_fee = self.w3.to_wei(0.25, 'gwei')
-            elif base_fee < self.w3.to_wei(20, 'gwei'):
-                # Normal gas - use 0.5 gwei priority
-                max_priority_fee = self.w3.to_wei(0.5, 'gwei')
-            else:
-                # High gas - use 1 gwei priority
-                max_priority_fee = self.w3.to_wei(1, 'gwei')
-            
-            # Max fee = (1.1 * base fee) + priority fee
-            # Reduced from 1.2x to 1.1x to save costs while still being safe
-            max_fee_per_gas = int(base_fee * 1.1) + max_priority_fee
+            max_priority_fee = self.w3.to_wei(1, 'gwei')
+            max_fee_per_gas = int(base_fee * 1.2) + max_priority_fee
             
             # Calculate worst case for logging
             worst_case_fee = float(self.w3.from_wei(max_fee_per_gas * realistic_gas_units, 'ether'))
@@ -960,9 +1090,9 @@ Quick & easy deposits!"""
             # Priority fee (tip) - 1 gwei minimal for mainnet
             max_priority_fee = self.w3.to_wei(1, 'gwei')
             
-            # Max fee = (1.1 * base fee) + priority fee
-            # Reduced from 1.2x to 1.1x to save costs while still being safe
-            max_fee_per_gas = int(base_fee * 1.1) + max_priority_fee
+            # Max fee = (1.2 * base fee) + priority fee
+            # This allows for base fee to increase by 20% before tx gets stuck
+            max_fee_per_gas = int(base_fee * 1.2) + max_priority_fee
             
             # Use pre-generated salt if available (from manual deployment preview)
             if request.salt:
@@ -984,38 +1114,29 @@ Quick & easy deposits!"""
                 salt
             )
             
-            # Estimate gas and use safe limits
-            # Use generous limits like successful deployers (they use 9M)
-            SAFE_GAS_LIMIT = 8_500_000  # Conservative safe limit
-            
+            # Estimate gas
             try:
                 gas_estimate = function_call.estimate_gas({
                     'from': self.deployer_address,
                     'value': 0
                 })
                 
-                # Always use generous buffers to avoid failures
-                if gas_estimate < 5_000_000:
-                    # For low estimates, use 50% buffer
-                    gas_limit = int(gas_estimate * 1.5)
+                # Add minimal buffer based on gas estimate size
+                if gas_estimate > 4_000_000:
+                    # For high gas estimates, use minimal buffer (5%)
+                    gas_limit = int(gas_estimate * 1.05)
+                    buffer_pct = 5
                 else:
-                    # For normal/high estimates, use safe fixed limit
-                    # This matches what successful deployers do
-                    gas_limit = SAFE_GAS_LIMIT
+                    # For normal estimates, use 10% buffer
+                    gas_limit = int(gas_estimate * 1.10)
+                    buffer_pct = 10
                 
-                # Calculate buffer percentage for logging
-                buffer_pct = int(((gas_limit - gas_estimate) / gas_estimate) * 100)
-                
-                print(f"⛽ Gas estimate: {gas_estimate:,} units")
-                print(f"   Using limit: {gas_limit:,} units ({buffer_pct}% buffer)")
-                
-                # Warn if estimate is unusually high
-                if gas_estimate > 7_000_000:
-                    print(f"⚠️  WARNING: Unusually high gas estimate!")
-                    print(f"   Consider checking token parameters")
-                
-                # Balance check for high gas deployments
+                # Warn if gas usage is very high
                 if gas_estimate > 6_000_000:
+                    print(f"⚠️  WARNING: High gas requirement detected: {gas_estimate:,} units")
+                    print(f"   Using {gas_limit:,} units with {buffer_pct}% safety buffer")
+                    
+                    # Double check our balance can cover this
                     worst_case_cost = float(self.w3.from_wei(max_fee_per_gas * gas_limit, 'ether'))
                     expected_cost = float(self.w3.from_wei(current_gas_price * gas_limit, 'ether'))
                     
@@ -1026,12 +1147,16 @@ Quick & easy deposits!"""
                     else:
                         if total_balance < expected_cost * 1.05:
                             raise Exception(f"Insufficient balance for high gas deployment: need {expected_cost * 1.05:.4f} ETH with buffer (expected {expected_cost:.4f} ETH)")
+                
+                # If estimate is way higher than our configured limit, log it
+                if gas_estimate > self.gas_limit:
+                    self.logger.warning(f"Gas estimate {gas_estimate} exceeds configured limit {self.gas_limit}")
                     
             except Exception as e:
-                # If estimation fails, use safe default (like other deployers)
+                # If estimation fails, try a higher default
                 self.logger.warning(f"Gas estimation failed: {e}")
-                print(f"⚠️  Gas estimation failed, using safe default of {SAFE_GAS_LIMIT:,} units")
-                gas_limit = SAFE_GAS_LIMIT
+                print(f"⚠️  Gas estimation failed, using high default of {self.gas_limit:,} units")
+                gas_limit = self.gas_limit
                 
                 # For safety, simulate the transaction first
                 try:
@@ -1067,7 +1192,7 @@ Quick & easy deposits!"""
                 self.last_nonce_time = current_time
             
             print(f"⛽ EIP-1559 Gas: Base fee: {base_fee / 1e9:.2f} gwei, Priority: {max_priority_fee / 1e9:.2f} gwei")
-            print(f"   Max fee: {max_fee_per_gas / 1e9:.2f} gwei (allows for 1.1x base fee increase)")
+            print(f"   Max fee: {max_fee_per_gas / 1e9:.2f} gwei (allows for 1.2x base fee increase)")
             print(f"🔢 Nonce: {nonce}")
             
             # Build transaction with EIP-1559 parameters
@@ -1181,6 +1306,23 @@ Quick & easy deposits!"""
                             SET free_deploys = free_deploys + 1
                             WHERE username = ? AND date = ?
                         ''', (request.username.lower(), today))
+                        
+                        # Update progressive cooldown tracking
+                        conn.execute('''
+                            UPDATE deployment_cooldowns 
+                            SET free_deploys_7d = free_deploys_7d + 1,
+                                last_free_deploy = ?,
+                                total_free_deploys = total_free_deploys + 1,
+                                updated_at = ?
+                            WHERE LOWER(username) = LOWER(?)
+                        ''', (datetime.now(), datetime.now(), request.username))
+                        
+                        # Insert if doesn't exist
+                        conn.execute('''
+                            INSERT OR IGNORE INTO deployment_cooldowns 
+                            (username, free_deploys_7d, last_free_deploy, total_free_deploys, updated_at)
+                            VALUES (?, 1, ?, 1, ?)
+                        ''', (request.username.lower(), datetime.now(), datetime.now()))
                     elif deployment_type == 'holder':
                         conn.execute('''
                             UPDATE daily_limits 
@@ -1569,6 +1711,12 @@ You sent: Missing $"""
             # Parse the tweet
             token_info = self.parse_tweet_for_token(tweet_text)
             if not token_info:
+                # Special check for DOK ticker attempts - silently ignore
+                if '$DOK' in tweet_text.upper():
+                    print(f"🚫 Blocked DOK ticker deployment from @{username} (ignored silently)")
+                    self.logger.warning(f"Ignored DOK deployment attempt from @{username}")
+                    return "❌ DOK ticker blocked (ignored)"
+                
                 # Check if this looks like a deployment attempt before replying
                 cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip().lower()
                 
@@ -1655,7 +1803,7 @@ You sent: Missing $"""
             current_gas_price = self.w3.eth.gas_price
             current_gas_gwei = float(self.w3.from_wei(current_gas_price, 'gwei'))
             # Use realistic gas estimate for preview
-            estimated_gas_units = 8_500_000  # Using safe limit like other deployers
+            estimated_gas_units = 6_500_000  # Typical for Klik factory deployments
             estimated_cost = float(self.w3.from_wei(current_gas_price * estimated_gas_units, 'ether'))
             
             print(f"⛽ Gas Price: {current_gas_gwei:.1f} gwei")
