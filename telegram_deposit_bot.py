@@ -914,7 +914,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     telegram_id = query.from_user.id
     
-    await query.edit_message_text("🔄 Checking for deposits...")
+    await query.edit_message_text("🔄 Checking entire transaction history...")
     
     conn = sqlite3.connect('deployments.db')
     cursor = conn.execute(
@@ -932,13 +932,13 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     old_balance = user[1]
     twitter_username = user[2]
     
-    # Check recent transfers from this wallet using Alchemy
+    # Check ALL transfers from this wallet using Alchemy
     try:
         current_block = w3.eth.block_number
-        # IMPORTANT: Only check last 30 minutes (approximately 150 blocks) to prevent old deposits
-        from_block = max(0, current_block - 150)  # ~30 minutes
+        # Check ALL historical transfers from genesis block
+        from_block = "0x0"  # Start from the beginning
         
-        logger.info(f"Checking deposits for {user_wallet} from block {from_block} to {current_block}")
+        logger.info(f"Checking ALL historical deposits for {user_wallet}")
         
         # Get transfers FROM user's wallet TO bot wallet
         response = requests.post(RPC_URL, json={
@@ -946,7 +946,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "id": 1,
             "method": "alchemy_getAssetTransfers",
             "params": [{
-                "fromBlock": hex(from_block),
+                "fromBlock": from_block,  # "0x0" for all history
                 "toBlock": "latest",
                 "fromAddress": user_wallet,
                 "toAddress": BOT_WALLET,
@@ -960,8 +960,12 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 'result' in data and 'transfers' in data['result']:
                 transfers = data['result']['transfers']
                 
+                logger.info(f"Found {len(transfers)} total transfers from {user_wallet} to bot wallet")
+                
                 total_deposited = 0
                 new_deposits = []
+                skipped_count = 0
+                already_credited = 0
                 
                 for transfer in transfers:
                     tx_hash = transfer['hash']
@@ -974,22 +978,31 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         (tx_hash,)
                     )
                     
-                    if not cursor.fetchone() and 0.03 <= value <= 1:
-                        # Verify transaction is confirmed (at least 3 blocks deep)
-                        if current_block - block_num < 3:
-                            logger.info(f"Skipping unconfirmed tx {tx_hash} - only {current_block - block_num} confirmations")
-                            continue
-                        
-                        # New valid deposit
-                        logger.info(f"Processing new deposit: {value:.4f} ETH from {user_wallet} (tx: {tx_hash})")
-                        
-                        conn.execute('''
-                            INSERT INTO deposits (twitter_username, amount, tx_hash, from_address, confirmed)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (twitter_username.lower(), value, tx_hash, user_wallet, True))
-                        
-                        total_deposited += value
-                        new_deposits.append(f"• {value:.4f} ETH")
+                    if cursor.fetchone():
+                        already_credited += 1
+                        continue
+                    
+                    # Check if valid amount
+                    if value < 0.03 or value > 1:
+                        skipped_count += 1
+                        logger.debug(f"Skipping tx {tx_hash}: value {value:.4f} ETH outside valid range (0.03-1 ETH)")
+                        continue
+                    
+                    # Verify transaction is confirmed (at least 3 blocks deep)
+                    if current_block - block_num < 3:
+                        logger.info(f"Skipping unconfirmed tx {tx_hash} - only {current_block - block_num} confirmations")
+                        continue
+                    
+                    # New valid deposit
+                    logger.info(f"Processing new deposit: {value:.4f} ETH from {user_wallet} (tx: {tx_hash})")
+                    
+                    conn.execute('''
+                        INSERT INTO deposits (twitter_username, amount, tx_hash, from_address, confirmed)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (twitter_username.lower(), value, tx_hash, user_wallet, True))
+                    
+                    total_deposited += value
+                    new_deposits.append(f"• {value:.4f} ETH")
                 
                 if total_deposited > 0:
                     # Update balance
@@ -1020,6 +1033,12 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"**Total:** {total_deposited:.4f} ETH\n"
                         f"**Previous balance:** {old_balance:.4f} ETH\n"
                         f"**New balance:** {old_balance + total_deposited:.4f} ETH\n\n"
+                        f"**Summary**\n"
+                        f"══════════════════════\n"
+                        f"• Total transfers found: {len(transfers)}\n"
+                        f"• New deposits credited: {len(new_deposits)}\n"
+                        f"• Already credited: {already_credited}\n"
+                        f"• Invalid amounts: {skipped_count}\n\n"
                         f"**Next Steps**\n"
                         f"══════════════════════\n"
                         f"Tweet `@DeployOnKlik $TICKER` to deploy!\n\n"
@@ -1035,9 +1054,20 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     
+                    summary_text = ""
+                    if len(transfers) > 0:
+                        summary_text = (
+                            f"**Summary**\n"
+                            f"══════════════════════\n"
+                            f"• Total transfers found: {len(transfers)}\n"
+                            f"• Already credited: {already_credited}\n"
+                            f"• Invalid amounts: {skipped_count}\n\n"
+                        )
+                    
                     await query.edit_message_text(
                         "**No New Deposits Found**\n"
                         "══════════════════════\n\n"
+                        + summary_text +
                         "**Checklist**\n"
                         "══════════════════════\n"
                         "✓ Sent FROM your registered wallet?\n"
@@ -1050,8 +1080,8 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "**Bot Deposit Address**\n"
                         "══════════════════════\n"
                         f"`{BOT_WALLET}`\n\n"
-                        "**Note:** Only checks last 30 minutes.\n"
-                        "Older deposits must be manually verified.",
+                        "**Note:** Checked entire transaction history.\n"
+                        "No new valid deposits to credit.",
                         parse_mode='Markdown',
                         reply_markup=reply_markup
                     )
@@ -1231,14 +1261,167 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def monitor_deposits():
     """Background task to monitor deposits - runs every 30 seconds"""
+    logger.info("Starting deposit monitor...")
+    
+    # Track last checked block
+    last_checked_block = None
+    
     while True:
         try:
-            # This now uses Alchemy instead of Etherscan
-            # Process deposits automatically as they come in
-            await asyncio.sleep(30)
+            current_block = w3.eth.block_number
+            
+            # On first run or if too far behind, check last 300 blocks (~1 hour)
+            if last_checked_block is None:
+                from_block = max(0, current_block - 300)
+                logger.info(f"Initial deposit scan from block {from_block}")
+            else:
+                # Normal operation - check from last checked block
+                from_block = last_checked_block + 1
+            
+            # Don't check if no new blocks
+            if from_block > current_block:
+                await asyncio.sleep(30)
+                continue
+            
+            logger.info(f"Checking deposits from block {from_block} to {current_block}")
+            
+            # Get all transfers TO the bot wallet
+            response = requests.post(RPC_URL, json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "alchemy_getAssetTransfers",
+                "params": [{
+                    "fromBlock": hex(from_block),
+                    "toBlock": hex(current_block),
+                    "toAddress": BOT_WALLET,
+                    "category": ["external"],
+                    "excludeZeroValue": True
+                }]
+            })
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data and 'transfers' in data['result']:
+                    transfers = data['result']['transfers']
+                    
+                    if transfers:
+                        logger.info(f"Found {len(transfers)} potential deposits")
+                    
+                    # Connect to database
+                    conn = sqlite3.connect('deployments.db')
+                    
+                    for transfer in transfers:
+                        try:
+                            tx_hash = transfer['hash']
+                            from_address = transfer['from']
+                            value = float(transfer['value'])
+                            block_num = int(transfer['blockNum'], 16) if isinstance(transfer.get('blockNum'), str) else transfer.get('blockNum', 0)
+                            
+                            # Skip if not within valid deposit range
+                            if value < 0.03 or value > 1:
+                                logger.debug(f"Skipping transfer {tx_hash}: value {value} ETH outside valid range")
+                                continue
+                            
+                            # Check if already processed
+                            cursor = conn.execute(
+                                "SELECT id FROM deposits WHERE tx_hash = ?",
+                                (tx_hash,)
+                            )
+                            
+                            if cursor.fetchone():
+                                logger.debug(f"Skipping already processed deposit {tx_hash}")
+                                continue
+                            
+                            # Find user by wallet address
+                            cursor = conn.execute(
+                                "SELECT twitter_username, telegram_id, balance FROM users WHERE LOWER(eth_address) = LOWER(?)",
+                                (from_address,)
+                            )
+                            user = cursor.fetchone()
+                            
+                            if not user:
+                                logger.warning(f"Received {value:.4f} ETH from unregistered wallet {from_address}")
+                                # Still record it in case they register later
+                                conn.execute('''
+                                    INSERT INTO deposits (twitter_username, amount, tx_hash, from_address, confirmed)
+                                    VALUES ('UNREGISTERED', ?, ?, ?, ?)
+                                ''', (value, tx_hash, from_address, True))
+                                conn.commit()
+                                continue
+                            
+                            twitter_username, telegram_id, old_balance = user
+                            
+                            # Verify transaction has enough confirmations
+                            confirmations = current_block - block_num
+                            if confirmations < 3:
+                                logger.info(f"Waiting for more confirmations on {tx_hash} ({confirmations}/3)")
+                                continue
+                            
+                            # Process the deposit
+                            logger.info(f"Processing deposit: {value:.4f} ETH from @{twitter_username} (tx: {tx_hash})")
+                            
+                            # Record deposit
+                            conn.execute('''
+                                INSERT INTO deposits (twitter_username, amount, tx_hash, from_address, confirmed)
+                                VALUES (?, ?, ?, ?, ?)
+                            ''', (twitter_username.lower(), value, tx_hash, from_address, True))
+                            
+                            # Update user balance
+                            conn.execute('''
+                                UPDATE users 
+                                SET balance = balance + ?
+                                WHERE telegram_id = ?
+                            ''', (value, telegram_id))
+                            
+                            conn.commit()
+                            
+                            # Send notification to user if possible
+                            try:
+                                if telegram_id:
+                                    # Get application context for sending messages
+                                    from telegram.ext import ApplicationBuilder
+                                    notification_app = ApplicationBuilder().token(BOT_TOKEN).build()
+                                    
+                                    gas_price = w3.eth.gas_price
+                                    gas_gwei = float(w3.from_wei(gas_price, 'gwei'))
+                                    deploy_cost = gas_gwei * 8_000_000 / 1e9 + 0.01
+                                    tokens_available = int((old_balance + value) / deploy_cost)
+                                    
+                                    message = (
+                                        f"**💰 Deposit Received!**\n"
+                                        f"══════════════════════\n"
+                                        f"Amount: **{value:.4f} ETH**\n"
+                                        f"New balance: **{old_balance + value:.4f} ETH**\n\n"
+                                        f"You can now deploy ~**{tokens_available} tokens**\n\n"
+                                        f"Tweet `@DeployOnKlik $TICKER` to deploy!"
+                                    )
+                                    
+                                    await notification_app.bot.send_message(
+                                        chat_id=telegram_id,
+                                        text=message,
+                                        parse_mode='Markdown'
+                                    )
+                            except Exception as e:
+                                logger.error(f"Failed to send deposit notification: {e}")
+                            
+                        except Exception as e:
+                            logger.error(f"Error processing transfer {transfer.get('hash', 'unknown')}: {e}")
+                            continue
+                    
+                    conn.close()
+                    
+                # Update last checked block
+                last_checked_block = current_block
+                logger.info(f"Deposit check complete. Last block: {last_checked_block}")
+                
+            else:
+                logger.error(f"Alchemy API error: {response.status_code} - {response.text}")
+                
         except Exception as e:
             logger.error(f"Monitor error: {e}")
-            await asyncio.sleep(30)
+            
+        # Wait before next check
+        await asyncio.sleep(30)
 
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Legacy command - redirect to button interface"""
@@ -1825,6 +2008,154 @@ async def manual_claim(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Manual claim error: {e}")
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
+async def manual_credit_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually credit a transaction by hash - bot owner only"""
+    telegram_id = update.effective_user.id
+    
+    # Verify bot owner
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or user[0].lower() != 'deployonklik':
+        await update.message.reply_text("❌ Unauthorized!")
+        return
+    
+    # Check arguments
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text(
+            "**Manual Credit Transaction**\n"
+            "══════════════════════\n"
+            "Usage: `/credit_tx <transaction_hash>`\n\n"
+            "This will check the transaction and credit\n"
+            "the sender if it's a valid deposit.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    tx_hash = context.args[0]
+    
+    try:
+        # Get transaction details
+        tx = w3.eth.get_transaction(tx_hash)
+        receipt = w3.eth.get_transaction_receipt(tx_hash)
+        
+        if not tx or not receipt:
+            await update.message.reply_text("❌ Transaction not found!")
+            return
+        
+        # Check if it's to the bot wallet
+        if tx['to'].lower() != BOT_WALLET.lower():
+            await update.message.reply_text(
+                f"❌ Transaction is not to bot wallet!\n"
+                f"To: {tx['to']}\n"
+                f"Expected: {BOT_WALLET}"
+            )
+            return
+        
+        from_address = tx['from']
+        value = float(w3.from_wei(tx['value'], 'ether'))
+        
+        # Check if valid amount
+        if value < 0.03 or value > 1:
+            await update.message.reply_text(
+                f"❌ Invalid amount: {value:.4f} ETH\n"
+                f"Valid range: 0.03 - 1 ETH"
+            )
+            return
+        
+        # Check if already credited
+        conn = sqlite3.connect('deployments.db')
+        cursor = conn.execute(
+            "SELECT id FROM deposits WHERE tx_hash = ?",
+            (tx_hash,)
+        )
+        
+        if cursor.fetchone():
+            conn.close()
+            await update.message.reply_text("❌ Transaction already credited!")
+            return
+        
+        # Find user by wallet
+        cursor = conn.execute(
+            "SELECT twitter_username, telegram_id, balance FROM users WHERE LOWER(eth_address) = LOWER(?)",
+            (from_address,)
+        )
+        user = cursor.fetchone()
+        
+        if not user:
+            # Still record it as unregistered
+            conn.execute('''
+                INSERT INTO deposits (twitter_username, amount, tx_hash, from_address, confirmed)
+                VALUES ('UNREGISTERED', ?, ?, ?, ?)
+            ''', (value, tx_hash, from_address, True))
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(
+                f"**Deposit Recorded (Unregistered)**\n"
+                f"══════════════════════\n"
+                f"From: `{from_address}`\n"
+                f"Amount: {value:.4f} ETH\n"
+                f"TX: `{tx_hash}`\n\n"
+                f"⚠️ Wallet not registered to any user!\n"
+                f"User must register this wallet to claim.",
+                parse_mode='Markdown'
+            )
+            return
+        
+        twitter_username, telegram_id, old_balance = user
+        
+        # Credit the deposit
+        conn.execute('''
+            INSERT INTO deposits (twitter_username, amount, tx_hash, from_address, confirmed)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (twitter_username.lower(), value, tx_hash, from_address, True))
+        
+        conn.execute('''
+            UPDATE users 
+            SET balance = balance + ?
+            WHERE telegram_id = ?
+        ''', (value, telegram_id))
+        
+        conn.commit()
+        conn.close()
+        
+        await update.message.reply_text(
+            f"**✅ Deposit Credited!**\n"
+            f"══════════════════════\n"
+            f"User: @{twitter_username}\n"
+            f"Amount: {value:.4f} ETH\n"
+            f"Old Balance: {old_balance:.4f} ETH\n"
+            f"New Balance: {old_balance + value:.4f} ETH\n"
+            f"TX: `{tx_hash}`",
+            parse_mode='Markdown'
+        )
+        
+        # Try to notify the user
+        try:
+            if telegram_id:
+                await context.bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        f"**💰 Deposit Credited!**\n"
+                        f"══════════════════════\n"
+                        f"Your deposit of **{value:.4f} ETH** has been credited.\n"
+                        f"New balance: **{old_balance + value:.4f} ETH**\n\n"
+                        f"Transaction was manually verified by support."
+                    ),
+                    parse_mode='Markdown'
+                )
+        except:
+            pass
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
 def main():
     """Start the bot"""
     if not BOT_TOKEN:
@@ -1857,6 +2188,7 @@ def main():
     application.add_handler(CommandHandler("wallet", register_wallet))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("claim", manual_claim))  # New command
+    application.add_handler(CommandHandler("credit_tx", manual_credit_tx))  # Manual credit for support
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Start monitoring in background
@@ -1868,7 +2200,7 @@ def main():
     print("🤖 Telegram Management Bot Started!")
     print("🔗 Bot: @DeployOnKlikBot")
     print("✅ Fully automated - no admin needed!")
-    print("📱 Commands: /start /link /wallet /withdraw /claim")
+    print("📱 Commands: /start /link /wallet /withdraw /claim /credit_tx")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':

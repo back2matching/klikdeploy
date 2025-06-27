@@ -31,7 +31,6 @@ import requests
 
 # Database for tracking
 import sqlite3
-from dataclasses import dataclass
 
 # For address calculation
 from eth_hash.auto import keccak
@@ -45,27 +44,11 @@ sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
 sqlite3.register_converter("timestamp", lambda b: datetime.fromisoformat(b.decode()))
 
 # For image handling
-from io import BytesIO
 import base64
 
-@dataclass
-class DeploymentRequest:
-    """Represents a token deployment request"""
-    tweet_id: str
-    username: str
-    token_name: str
-    token_symbol: str
-    requested_at: datetime
-    tweet_url: str  # URL of the tweet that triggered deployment
-    parent_tweet_id: Optional[str] = None  # If this is a reply
-    image_url: Optional[str] = None  # Image from parent tweet
-    deployed_at: Optional[datetime] = None
-    tx_hash: Optional[str] = None
-    token_address: Optional[str] = None
-    status: str = "pending"  # pending, deploying, success, failed
-    follower_count: int = 0  # Track follower count for rate limits
-    salt: Optional[str] = None  # Pre-generated salt for CREATE2
-    predicted_address: Optional[str] = None  # Predicted contract address
+# Import data models
+from deployer.models import DeploymentRequest
+from deployer.services import IPFSService
 
 class KlikTokenDeployer:
     """Twitter-triggered token deployer for Klik Finance"""
@@ -112,6 +95,9 @@ class KlikTokenDeployer:
         self.nonce_lock = Lock()  # Separate lock for nonce management
         self.last_nonce = None
         self.last_nonce_time = 0
+        
+        # Initialize services
+        self.ipfs_service = IPFSService()
         
         print("🚀 KLIK FINANCE TWITTER DEPLOYER v2.0")
         print("=" * 50)
@@ -232,11 +218,6 @@ class KlikTokenDeployer:
         self.max_deploys_per_user_per_day = int(os.getenv('MAX_DEPLOYS_PER_USER_PER_DAY', '3'))
         self.cooldown_minutes = int(os.getenv('COOLDOWN_MINUTES', '5'))
         self.min_follower_count = int(os.getenv('MIN_FOLLOWER_COUNT', '100'))
-        
-        # IPFS service config
-        self.pinata_api_key = os.getenv('PINATA_API_KEY')
-        self.pinata_secret_key = os.getenv('PINATA_SECRET_KEY')
-        self.web3_storage_token = os.getenv('WEB3_STORAGE_TOKEN')
     
     def _setup_web3(self):
         """Setup Web3 connection"""
@@ -932,95 +913,6 @@ Visit t.me/DeployOnKlik 💬
 
 Quick & easy deposits!"""
     
-    async def upload_image_to_ipfs(self, image_url: str) -> Optional[str]:
-        """Download image from URL and upload to IPFS"""
-        try:
-            # Download the image
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as response:
-                    if response.status != 200:
-                        self.logger.error(f"Failed to download image: {response.status}")
-                        return None
-                    
-                    image_data = await response.read()
-                    content_type = response.headers.get('Content-Type', 'image/jpeg')
-            
-            # Upload to IPFS
-            if self.pinata_api_key and self.pinata_secret_key:
-                # Use Pinata
-                url = "https://api.pinata.cloud/pinning/pinFileToIPFS"
-                headers = {
-                    "pinata_api_key": self.pinata_api_key,
-                    "pinata_secret_api_key": self.pinata_secret_key
-                }
-                
-                # Prepare multipart form data
-                files = {
-                    'file': ('image', BytesIO(image_data), content_type)
-                }
-                
-                response = requests.post(url, files=files, headers=headers)
-                if response.status_code == 200:
-                    ipfs_hash = response.json()['IpfsHash']
-                    self.logger.info(f"Image uploaded to IPFS: {ipfs_hash}")
-                    return ipfs_hash
-                else:
-                    self.logger.error(f"Pinata upload failed: {response.text}")
-            
-            elif self.web3_storage_token:
-                # Use web3.storage
-                url = "https://api.web3.storage/upload"
-                headers = {
-                    "Authorization": f"Bearer {self.web3_storage_token}",
-                    "X-NAME": "token-image"
-                }
-                
-                response = requests.post(url, data=image_data, headers=headers)
-                if response.status_code == 200:
-                    cid = response.json()['cid']
-                    self.logger.info(f"Image uploaded to IPFS: {cid}")
-                    return cid
-                else:
-                    self.logger.error(f"Web3.storage upload failed: {response.text}")
-            
-            self.logger.warning("No IPFS service configured for image upload")
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error uploading image to IPFS: {e}")
-            return None
-    
-    def upload_metadata_to_ipfs(self, metadata: Dict) -> Optional[str]:
-        """Upload metadata JSON to IPFS"""
-        try:
-            if self.pinata_api_key and self.pinata_secret_key:
-                url = "https://api.pinata.cloud/pinning/pinJSONToIPFS"
-                headers = {
-                    "pinata_api_key": self.pinata_api_key,
-                    "pinata_secret_api_key": self.pinata_secret_key
-                }
-                
-                response = requests.post(url, json=metadata, headers=headers)
-                if response.status_code == 200:
-                    return response.json()['IpfsHash']
-            
-            elif self.web3_storage_token:
-                url = "https://api.web3.storage/upload"
-                headers = {
-                    "Authorization": f"Bearer {self.web3_storage_token}",
-                    "Content-Type": "application/json"
-                }
-                
-                response = requests.post(url, json=metadata, headers=headers)
-                if response.status_code == 200:
-                    return response.json()['cid']
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error uploading metadata to IPFS: {e}")
-            return None
-    
     async def fetch_parent_tweet_image(self, parent_tweet_id: str) -> Optional[str]:
         """Fetch image from parent tweet (requires Twitter API)
         
@@ -1118,15 +1010,15 @@ Quick & easy deposits!"""
             image_ipfs = None
             if request.image_url:
                 print(f"🖼️  Uploading image from parent tweet...")
-                image_ipfs = await self.upload_image_to_ipfs(request.image_url)
+                image_ipfs = await self.ipfs_service.upload_image_to_ipfs(request.image_url)
                 if image_ipfs:
                     metadata_obj["image"] = image_ipfs
                     print(f"✅ Image uploaded: {image_ipfs}")
             
             # Try to upload metadata to IPFS
             metadata = None
-            if self.pinata_api_key or self.web3_storage_token:
-                metadata_ipfs = self.upload_metadata_to_ipfs(metadata_obj)
+            if self.ipfs_service.pinata_api_key or self.ipfs_service.web3_storage_token:
+                metadata_ipfs = self.ipfs_service.upload_metadata_to_ipfs(metadata_obj)
                 if metadata_ipfs:
                     metadata = metadata_ipfs
                     print(f"📦 Metadata uploaded to IPFS: {metadata_ipfs}")

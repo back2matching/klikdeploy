@@ -182,4 +182,41 @@ CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
 - [ ] Web dashboard for stats
 - [ ] API for third-party integrations
 - [ ] Automated liquidity management
-- [ ] Token presale functionality 
+- [ ] Token presale functionality
+
+## v1.02 Updates - Complete
+1. Incentive Distribution split changed:
+   - V1.01: 100% of 0.001 ETH to token deployer
+   - V1.02: 25% to DOK buyback, 25% incentives, 50% developer
+
+## Deposit System Update - June 27, 2025
+
+### Problem
+Users reported deposits not being credited automatically, requiring manual intervention.
+
+### Solution
+Implemented robust deposit monitoring using Alchemy Transfers API:
+
+1. **Automatic Monitoring**: 
+   - Checks for deposits every 30 seconds
+   - Processes deposits automatically with notifications
+   - Tracks last checked block to avoid missing transactions
+
+2. **Manual Check Enhancement**:
+   - Now checks ENTIRE transaction history (not just 24 hours)
+   - Users can claim ANY historical deposits via "Check Deposits" button
+   - Shows summary of transfers found, already credited, and invalid amounts
+
+3. **Support Tools**:
+   - Added `/credit_tx <tx_hash>` command for manual crediting
+   - Validates transaction before crediting to prevent errors
+
+4. **Security**:
+   - 3 block confirmation requirement
+   - Transaction hash tracking prevents double-crediting
+   - Only registered wallets can be credited
+
+### Impact
+- Users get credited within 30 seconds automatically
+- No more lost deposits
+- Support can manually credit edge cases if needed 
