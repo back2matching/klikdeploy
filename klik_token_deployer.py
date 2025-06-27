@@ -586,7 +586,22 @@ Deposit to deploy now: t.me/DeployOnKlik"""
                     return True, f"✅ Free deployment allowed (gas: {likely_gas_gwei:.1f} gwei)"
             else:
                 # This should rarely happen with progressive cooldown, but just in case
-                return False, f"""🚫 You've already used your free deployment!
+                # Get user's last deployment to show them
+                last_deployment = self.db.get_last_successful_deployment(username)
+                
+                if last_deployment:
+                    token_symbol_last, token_address = last_deployment
+                    return False, f"""🚫 You've already deployed ${token_symbol_last}!
+
+📈 dexscreener.com/ethereum/{token_address}
+
+New limit: ~1 free deploy per week
+
+Want to deploy NOW?
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Or hold 5M+ $DOK for 3/week"""
+                else:
+                    return False, f"""🚫 You've already used your free deployment!
 
 New limit: ~1 free deploy per week
 
@@ -1371,11 +1386,15 @@ You sent: Missing $"""
                 follower_count=follower_count
             )
             
+            # Log the deployment request details
+            self.logger.info(f"Processing deployment request: @{username} - {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}")
+            
             # Show deployment preview and ask for confirmation
             print(f"\n📋 DEPLOYMENT PREVIEW")
             print(f"=" * 50)
             print(f"💰 Token: {request.token_name} ({request.token_symbol})")
             print(f"👤 User: @{request.username}")
+            print(f"📝 Tweet: {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}")
             print(f"🔗 Tweet: {request.tweet_url}")
             if request.image_url:
                 print(f"🖼️  Image: ✅ Found ({request.image_url[:50]}...)")
@@ -1948,8 +1967,21 @@ Deposit ETH for any gas: t.me/DeployOnKlik"""
 You have: {follower_count}
 Or deposit ETH: t.me/DeployOnKlik"""
             elif "already used your free deployment" in instructions:
-                # Handle the new message for daily limit
-                reply_text = f"""@{username} Free deploy already used! (~1/week limit)
+                # Get user's last deployment to show them
+                last_deployment = self.db.get_last_successful_deployment(username)
+                
+                if last_deployment:
+                    token_symbol, token_address = last_deployment
+                    reply_text = f"""@{username} You already deployed ${token_symbol}! (~1/week limit)
+
+📈 dexscreener.com/ethereum/{token_address}
+
+Want more?
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 3/week"""
+                else:
+                    # Fallback if no deployment found
+                    reply_text = f"""@{username} Free deploy already used! (~1/week limit)
 
 Want more?
 💰 Deposit ETH: t.me/DeployOnKlik

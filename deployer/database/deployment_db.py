@@ -503,4 +503,24 @@ class DeploymentDatabase:
                     INSERT INTO daily_limits (username, date, free_deploys, holder_deploys)
                     VALUES (?, ?, 0, 0)
                 ''', (username.lower(), date))
-                return 0, 0 
+                return 0, 0
+    
+    def get_last_successful_deployment(self, username: str) -> Optional[Tuple[str, str]]:
+        """Get the user's last successful deployment
+        
+        Returns:
+            Tuple of (token_symbol, token_address) if found, None otherwise
+        """
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+            cursor = conn.execute('''
+                SELECT token_symbol, token_address 
+                FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND status = 'success' 
+                AND token_address IS NOT NULL
+                ORDER BY deployed_at DESC 
+                LIMIT 1
+            ''', (username,))
+            
+            result = cursor.fetchone()
+            return result if result else None 

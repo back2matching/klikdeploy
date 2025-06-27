@@ -224,6 +224,7 @@ class TwitterMonitor:
         # Extract and show tweet timing
         tweet_created_at = tweet.get("createdAt", "")
         print(f"\n⚡ New mention from @{username} (followers: {follower_count:,})")
+        print(f"   Tweet: {text[:100]}{'...' if len(text) > 100 else ''}")
         print(f"   Tweet created: {tweet_created_at}")
         print(f"   Received at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
@@ -238,7 +239,8 @@ class TwitterMonitor:
         except Exception as e:
             print(f"   ⚠️  Could not calculate delay: {e}")
         
-        # Log full structure for debugging
+        # Log tweet text and full structure for debugging
+        self.logger.info(f"Processing tweet from @{username}: {text[:100]}{'...' if len(text) > 100 else ''}")
         if os.getenv('DEBUG_TWEETS', 'false').lower() == 'true':
             self.logger.debug(f"Tweet structure: {json.dumps(tweet, indent=2)}")
         

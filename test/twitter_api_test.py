@@ -11,6 +11,7 @@ import requests
 import json
 from datetime import datetime
 from requests_oauthlib import OAuth1
+import time
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -43,6 +44,9 @@ class TwitterAPITest:
         
         print("\n5. Account Tier Check")
         self.check_account_tier()
+        
+        print("\n6. Tweet Endpoint Rate Limit")
+        self.check_tweet_endpoint_limits()
         
     def check_credentials(self):
         """Check if all credentials exist"""
@@ -114,10 +118,16 @@ class TwitterAPITest:
             if response.status_code == 429:
                 print("❌ Rate limited (429)")
                 
+                # Show ALL rate limit headers
+                print("\n   All rate limit headers:")
+                for header, value in response.headers.items():
+                    if 'limit' in header.lower() or 'rate' in header.lower():
+                        print(f"   • {header}: {value}")
+                
                 if 'x-user-limit-24hour-remaining' in response.headers:
                     remaining = response.headers.get('x-user-limit-24hour-remaining', '0')
                     limit = response.headers.get('x-user-limit-24hour-limit', '0')
-                    print(f"   Daily limit: {remaining}/{limit}")
+                    print(f"\n   Daily limit: {remaining}/{limit}")
                     
                     if 'x-user-limit-24hour-reset' in response.headers:
                         reset_time = datetime.fromtimestamp(int(response.headers['x-user-limit-24hour-reset']))
@@ -159,6 +169,55 @@ class TwitterAPITest:
         except Exception as e:
             print(f"❌ Error: {e}")
             
+    def check_tweet_endpoint_limits(self):
+        """Check specific /2/tweets endpoint rate limits"""
+        print("Checking /2/tweets endpoint specifically...")
+        
+        try:
+            # Use tweepy to check rate limits
+            client = tweepy.Client(
+                consumer_key=self.api_key,
+                consumer_secret=self.api_secret,
+                access_token=self.access_token,
+                access_token_secret=self.access_token_secret
+            )
+            
+            # Try to get rate limit status using v1.1 endpoint
+            auth = OAuth1(self.api_key, self.api_secret, self.access_token, self.access_token_secret)
+            response = requests.get(
+                "https://api.twitter.com/1.1/application/rate_limit_status.json?resources=statuses",
+                auth=auth
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'resources' in data and 'statuses' in data['resources']:
+                    statuses = data['resources']['statuses']
+                    print("\n   v1.1 Status endpoints:")
+                    for endpoint, info in statuses.items():
+                        if info['remaining'] < info['limit']:
+                            reset_time = datetime.fromtimestamp(info['reset'])
+                            print(f"   • {endpoint}: {info['remaining']}/{info['limit']} (resets {reset_time.strftime('%H:%M')})")
+            
+            # Also check v2 directly
+            print("\n   Attempting test post to check v2 limits...")
+            test_response = requests.post(
+                "https://api.twitter.com/2/tweets",
+                json={"text": f"API Test {int(time.time())}"},
+                auth=auth
+            )
+            
+            print(f"\n   Response status: {test_response.status_code}")
+            print(f"   Response text: {test_response.text[:200]}...")
+            
+            # Print ALL headers for debugging
+            print("\n   Response headers:")
+            for header, value in sorted(test_response.headers.items()):
+                print(f"   • {header}: {value}")
+                
+        except Exception as e:
+            print(f"❌ Error checking tweet endpoint: {e}")
+            
     def quick_status(self):
         """Quick status check - when can post again"""
         print("\n⏰ POSTING STATUS\n")
@@ -171,14 +230,22 @@ class TwitterAPITest:
                 auth=auth
             )
             
+            print(f"Response status: {response.status_code}")
+            
+            if response.status_code == 429:
+                print("\n❌ RATE LIMITED!")
+                print("\nAll headers:")
+                for header, value in sorted(response.headers.items()):
+                    print(f"• {header}: {value}")
+            
             if 'x-user-limit-24hour-remaining' in response.headers:
                 remaining = int(response.headers.get('x-user-limit-24hour-remaining', '0'))
                 limit = int(response.headers.get('x-user-limit-24hour-limit', '0'))
                 
                 if remaining > 0:
-                    print(f"✅ Can post now! ({remaining}/{limit} remaining)")
+                    print(f"\n✅ Can post now! ({remaining}/{limit} remaining)")
                 else:
-                    print(f"❌ Daily limit reached (0/{limit})")
+                    print(f"\n❌ Daily limit reached (0/{limit})")
                     
                     if 'x-user-limit-24hour-reset' in response.headers:
                         reset_time = datetime.fromtimestamp(int(response.headers['x-user-limit-24hour-reset']))
