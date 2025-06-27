@@ -6,7 +6,7 @@ Users tweet `@DeployOnKlik $TOKEN` → Bot deploys tokens on Ethereum in 1-3 sec
 
 - **FREE** when gas ≤ 3 gwei (~1/week limit, 1500+ followers)
 - **PAID** when gas > 3 gwei (deposit ETH first)
-- **$DOK HOLDERS** get 2 free deploys/week with NO FEES (5M+ DOK)
+- **$DOK HOLDERS** get 3 free deploys/week with NO FEES (5M+ DOK)
 
 ## Quick Start - Run Both Bots Together
 
@@ -144,7 +144,7 @@ To become a holder, buy 5,000,000+ DOK tokens:
 - **Buy**: [DexScreener](https://dexscreener.com/ethereum/0x69ca61398eca94d880393522c1ef5c3d8c058837)
 
 Benefits:
-- 2 FREE deploys/week (gas ≤ 15 gwei)
+- 3 FREE deploys/week (gas ≤ 15 gwei)
 - **NO FEES** (save 0.01 ETH per deploy)
 - Works even when gas is high!
 

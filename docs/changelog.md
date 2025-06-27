@@ -4,34 +4,54 @@ All notable changes to the Klik Token Deployer bot system will be documented in 
 
 ## 📱 Twitter Update Templates
 
-### Latest Update (v2.1.2)
+### Latest Update (v2.1.3)
 ```
-🚨 UPDATE: ALL deployment limits adjusted for sustainability
+🚨 UPDATE: Holder benefits increased!
 
-FREE users: ~1 deploy/week
-HOLDER benefits: 2 deploys/WEEK (was 2/day)
-
-Why? To ensure long-term sustainability while keeping value for holders.
-
-Hold 5M+ $DOK → Still get 2 FREE/week up to 15 gwei
-CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
-```
-
-### For $DOK Holders
-```
-🎯 $DOK HOLDERS: Benefits adjusted for sustainability
-
-Your benefits:
-• 2 FREE deploys/week (was 2/day)
+$DOK holders now get:
+• 3 FREE deploys/week (was 2/week)
 • Up to 15 gwei gas
 • NO platform fees
 
-Still more than free users who get ~1/week!
+Free users: ~1/week
+Holders: 3x more deployments!
 
+Hold 5M+ $DOK (0.5% supply)
 CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
 ```
 
+### Updated Deployment Tiers
+```
+💎 Deployment Tiers
+
+🆓 FREE Tier
+• ~1 deployment per week max
+• Gas must be ≤3 gwei (≤6 gwei for 20k+ followers)
+• 1500+ 𝕏 followers required
+• Progressive cooldowns
+
+💰 PPD (Pay-Per-Deploy)
+• Unlimited deployments
+• Any gas price
+• Cost: Gas + 0.01 ETH fee
+
+🎯 $DOK Holder Benefits
+• 3 FREE deployments per week (3x free tier!)
+• Works up to 15 gwei gas
+• NO platform fees (save 0.01 ETH)
+• Hold 5M+ $DOK (0.5% of supply)
+```
+
 ---
+
+## [2.1.3] - 2024-12-27
+
+### 💎 Enhanced Holder Benefits
+
+#### Increased Weekly Allowance
+- **Changed**: Holder benefits from 2/week to 3/week
+- **Reason**: Better differentiation from free tier (3x more deployments)
+- **Impact**: Holders get 3 free deployments per week vs ~1/week for free users
 
 ## [2.1.2] - 2024-12-27
 
