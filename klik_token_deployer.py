@@ -96,6 +96,7 @@ class KlikTokenDeployer:
         print("🖼️  Auto-attach images from parent tweets")
         print("🔗 Auto-link to deployment tweet")
         print("📦 Queue System: ENABLED (max 10 pending)")
+        print(f"⏱️  Rate Limit: {self.max_deploys_per_hour} deploys per hour")
         
         # Show balance breakdown
         total_balance = self.get_eth_balance()
@@ -492,6 +493,12 @@ class KlikTokenDeployer:
         ]
         
         if len(recent_deploys) >= self.max_deploys_per_hour:
+            # Log this important event
+            self.logger.warning(f"⚠️ HOURLY RATE LIMIT HIT: {len(recent_deploys)}/{self.max_deploys_per_hour} deploys in last hour")
+            print(f"\n⚠️ SYSTEM RATE LIMIT: {self.max_deploys_per_hour} deploys/hour reached!")
+            print(f"   Recent deployments: {len(recent_deploys)}")
+            print(f"   User affected: @{username}")
+            print(f"   Time until reset: ~{60 - ((now - recent_deploys[0]).seconds // 60)} minutes")
             return False, f"⏳ System limit reached ({self.max_deploys_per_hour} deploys/hour). Try again later."
         
         # Estimate deployment cost using realistic gas usage
@@ -1690,6 +1697,15 @@ You sent: Missing $"""
                 queue_size = self.deployment_queue.qsize()
                 active_count = len(self.active_deployments)
                 
+                # Calculate hourly deployment count
+                now = datetime.now()
+                recent_deploys = [
+                    d for d in self.deployment_history 
+                    if d > now - timedelta(hours=1)
+                ]
+                hourly_count = len(recent_deploys)
+                hourly_percentage = (hourly_count / self.max_deploys_per_hour) * 100
+                
                 if queue_size > 0 or active_count > 0:
                     current_time = time.time()
                     
@@ -1702,9 +1718,13 @@ You sent: Missing $"""
                         print(f"\n📊 Queue Status Update:")
                         print(f"   • Queue: {queue_size}/10 pending")
                         print(f"   • Active: {active_count} deploying")
+                        print(f"   • Hourly Rate: {hourly_count}/{self.max_deploys_per_hour} ({hourly_percentage:.0f}%)")
                         print(f"   • Total Balance: {total_balance:.4f} ETH")
                         print(f"   • User Deposits: {user_deposits:.4f} ETH (protected)")
                         print(f"   • Available: {available_balance:.4f} ETH")
+                        
+                        if hourly_count >= self.max_deploys_per_hour * 0.9:  # 90% of limit
+                            print(f"   ⚠️  APPROACHING HOURLY LIMIT! Only {self.max_deploys_per_hour - hourly_count} deploys remaining")
                         
                         if queue_size >= 8:
                             print(f"   ⚠️  Queue nearly full! Consider increasing gas limit.")
@@ -1945,7 +1965,17 @@ Your token will deploy soon ⏳"""
             
             # Simple, clean message directing to Telegram channel
             # Extract key info from instructions
-            if "Gas too high" in instructions:
+            if "System limit reached" in instructions:
+                # Extract the limit number if possible
+                import re
+                limit_match = re.search(r'\((\d+) deploys/hour\)', instructions)
+                limit_num = limit_match.group(1) if limit_match else "30"
+                reply_text = f"""@{username} System busy! ({limit_num} deploys/hour limit)
+
+Please try again in a few minutes ⏳
+
+Status: t.me/DeployOnKlik"""
+            elif "Gas too high" in instructions:
                 gas_match = re.search(r'\((\d+\.?\d*) gwei\)', instructions)
                 gas_value = gas_match.group(1) if gas_match else "high"
                 reply_text = f"""@{username} Gas too high! ({gas_value} gwei)
