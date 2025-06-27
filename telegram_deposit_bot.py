@@ -84,6 +84,51 @@ def init_db():
         )
     ''')
     
+    # NEW: Fee claims tracking table
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS fee_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_address TEXT,
+            token_symbol TEXT,
+            token_name TEXT,
+            pool_address TEXT,
+            claimed_amount REAL,
+            buyback_amount REAL,
+            incentive_amount REAL,
+            dev_amount REAL,
+            claim_tx_hash TEXT,
+            buyback_tx_hash TEXT,
+            buyback_dok_amount REAL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # NEW: Separate balance tracking for different sources
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS balance_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_type TEXT, -- 'deposit', 'fee_claim', 'pay_per_deploy'
+            amount REAL,
+            tx_hash TEXT,
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # NEW: Track which tokens the bot has deployed
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS deployed_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            token_address TEXT UNIQUE,
+            token_symbol TEXT,
+            token_name TEXT,
+            pool_address TEXT,
+            deployed_at TIMESTAMP,
+            last_fee_check TIMESTAMP
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -330,6 +375,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
             [InlineKeyboardButton("📢 Channel", url="https://t.me/DeployOnKlik")]
         ]
+        
+        # Add Claim Fees button for bot owner only
+        if twitter_username.lower() == 'deployonklik':
+            keyboard.insert(2, [InlineKeyboardButton("💎 Claim Fees", callback_data="claim_fees")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -419,6 +468,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "check_holder":
         await check_holder_status(update, context)
+    
+    elif query.data == "claim_fees":
+        await show_claimable_fees(update, context)
+    
+    elif query.data.startswith("check_fees_"):
+        token_address = query.data[11:]  # Remove "check_fees_" prefix
+        await check_token_fees(update, context, token_address)
+    
+    elif query.data.startswith("execute_claim_"):
+        token_address = query.data[14:]  # Remove "execute_claim_" prefix
+        await execute_fee_claim(update, context, token_address)
 
 async def show_gas_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current gas prices and deployment costs"""
@@ -1375,6 +1435,260 @@ async def credit_failed_deployment(username: str, amount: float, tx_hash: str):
     except Exception as e:
         logger.error(f"Error crediting failed deployment: {e}")
         return False
+
+async def show_claimable_fees(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show claimable fees interface"""
+    query = update.callback_query
+    telegram_id = query.from_user.id
+    
+    # Verify bot owner
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    
+    if not user or user[0].lower() != 'deployonklik':
+        await query.edit_message_text("❌ Unauthorized!")
+        conn.close()
+        return
+    
+    # Get recently deployed tokens
+    cursor = conn.execute('''
+        SELECT DISTINCT token_address, token_symbol, token_name
+        FROM deployments
+        WHERE status = 'success' 
+        AND token_address IS NOT NULL
+        ORDER BY deployed_at DESC
+        LIMIT 10
+    ''')
+    
+    tokens = cursor.fetchall()
+    conn.close()
+    
+    keyboard = []
+    
+    # Add token buttons
+    for token_address, symbol, name in tokens:
+        button_text = f"${symbol} - {name[:20]}"
+        callback_data = f"check_fees_{token_address}"
+        # Truncate callback data if too long
+        if len(callback_data) > 64:
+            callback_data = f"check_fees_{token_address[:20]}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
+    
+    keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        "**💎 Fee Claiming System**\n"
+        "══════════════════════\n\n"
+        "Select a token to check claimable fees:\n\n"
+        "**Note:** Only showing last 10 deployed tokens",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+async def check_token_fees(update: Update, context: ContextTypes.DEFAULT_TYPE, token_address: str):
+    """Check claimable fees for a specific token"""
+    query = update.callback_query
+    await query.edit_message_text("🔄 Checking claimable fees...")
+    
+    try:
+        # Get pool address from factory (you'll need to implement this based on your factory ABI)
+        # For now, we'll simulate
+        pool_address = await get_pool_address(token_address)
+        
+        if not pool_address:
+            await query.edit_message_text("❌ No pool found for this token!")
+            return
+        
+        # Check claimable fees (implement based on your factory's viewClaimableFees function)
+        claimable = await check_claimable_fees(pool_address)
+        
+        if claimable == 0:
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "❌ No fees to claim for this token!",
+                reply_markup=reply_markup
+            )
+            return
+        
+        # Calculate splits
+        buyback_amount = claimable * 0.25
+        incentive_amount = claimable * 0.25
+        dev_amount = claimable * 0.5
+        
+        # Get token info
+        conn = sqlite3.connect('deployments.db')
+        cursor = conn.execute(
+            "SELECT token_symbol, token_name FROM deployments WHERE token_address = ?",
+            (token_address,)
+        )
+        token_info = cursor.fetchone()
+        conn.close()
+        
+        symbol = token_info[0] if token_info else "UNKNOWN"
+        name = token_info[1] if token_info else "Unknown Token"
+        
+        keyboard = [
+            [InlineKeyboardButton(f"✅ Claim {claimable:.4f} ETH", callback_data=f"execute_claim_{token_address}")],
+            [InlineKeyboardButton("🔙 Back", callback_data="claim_fees")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"**💎 Claimable Fees**\n"
+            f"══════════════════════\n\n"
+            f"**Token:** ${symbol} - {name}\n"
+            f"**Address:** `{token_address[:6]}...{token_address[-4:]}`\n"
+            f"**Pool:** `{pool_address[:6]}...{pool_address[-4:]}`\n\n"
+            f"**Total Claimable:** {claimable:.4f} ETH\n\n"
+            f"**Distribution (v1.02):**\n"
+            f"• **Buyback (25%):** {buyback_amount:.4f} ETH\n"
+            f"• **Incentives (25%):** {incentive_amount:.4f} ETH\n"
+            f"• **Developer (50%):** {dev_amount:.4f} ETH\n\n"
+            f"**Flywheel Effect:**\n"
+            f"The 25% buyback will automatically purchase\n"
+            f"$DOK and burn it after claiming.\n\n"
+            f"Claim these fees?",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        logger.error(f"Error checking fees: {e}")
+        await query.edit_message_text(f"❌ Error checking fees: {str(e)}")
+
+async def execute_fee_claim(update: Update, context: ContextTypes.DEFAULT_TYPE, token_address: str):
+    """Execute fee claim and automatic buyback"""
+    query = update.callback_query
+    await query.edit_message_text("⏳ Claiming fees...")
+    
+    try:
+        # Get pool info
+        pool_address = await get_pool_address(token_address)
+        claimable = await check_claimable_fees(pool_address)
+        
+        if claimable == 0:
+            await query.edit_message_text("❌ No fees to claim!")
+            return
+        
+        # Execute claim transaction
+        claim_tx_hash = await claim_fees_from_pool(pool_address)
+        
+        if not claim_tx_hash:
+            await query.edit_message_text("❌ Failed to claim fees!")
+            return
+        
+        # Calculate splits
+        buyback_amount = claimable * 0.25
+        incentive_amount = claimable * 0.25
+        dev_amount = claimable * 0.5
+        
+        # Record the claim
+        conn = sqlite3.connect('deployments.db')
+        
+        # Get token info
+        cursor = conn.execute(
+            "SELECT token_symbol, token_name FROM deployments WHERE token_address = ?",
+            (token_address,)
+        )
+        token_info = cursor.fetchone()
+        symbol = token_info[0] if token_info else "UNKNOWN"
+        name = token_info[1] if token_info else "Unknown Token"
+        
+        # Insert fee claim record
+        conn.execute('''
+            INSERT INTO fee_claims 
+            (token_address, token_symbol, token_name, pool_address, 
+             claimed_amount, buyback_amount, incentive_amount, dev_amount,
+             claim_tx_hash, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'claimed')
+        ''', (token_address, symbol, name, pool_address,
+              claimable, buyback_amount, incentive_amount, dev_amount,
+              claim_tx_hash))
+        
+        # Update balance sources
+        conn.execute('''
+            INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+            VALUES ('fee_claim', ?, ?, ?)
+        ''', (dev_amount, claim_tx_hash, f"Fee claim from ${symbol}"))
+        
+        # Update bot owner balance (only the dev portion)
+        conn.execute('''
+            UPDATE users 
+            SET balance = balance + ?
+            WHERE twitter_username = 'deployonklik'
+        ''', (dev_amount,))
+        
+        conn.commit()
+        
+        # Now execute the buyback
+        await query.edit_message_text(
+            f"✅ Fees claimed!\n"
+            f"TX: `{claim_tx_hash}`\n\n"
+            f"⏳ Executing buyback..."
+        )
+        
+        # Execute buyback
+        buyback_result = await execute_dok_buyback(buyback_amount, claim_tx_hash)
+        
+        if buyback_result['success']:
+            # Update the fee claim with buyback info
+            conn.execute('''
+                UPDATE fee_claims 
+                SET buyback_tx_hash = ?, buyback_dok_amount = ?, status = 'completed'
+                WHERE claim_tx_hash = ?
+            ''', (buyback_result['tx_hash'], buyback_result['dok_amount'], claim_tx_hash))
+            conn.commit()
+            
+            keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"**✅ Fee Claim Complete!**\n"
+                f"══════════════════════\n\n"
+                f"**Token:** ${symbol}\n\n"
+                f"**Claimed:** {claimable:.4f} ETH\n"
+                f"• Developer: {dev_amount:.4f} ETH\n"
+                f"• Buyback: {buyback_amount:.4f} ETH\n"
+                f"• Incentives: {incentive_amount:.4f} ETH\n\n"
+                f"**Claim TX:**\n`{claim_tx_hash}`\n\n"
+                f"**Buyback TX:**\n`{buyback_result['tx_hash']}`\n\n"
+                f"**DOK Bought & Burned:** {buyback_result['dok_amount']:,.0f} DOK\n\n"
+                f"💎 Flywheel effect activated!",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                f"**⚠️ Partial Success**\n\n"
+                f"Fees claimed but buyback failed.\n"
+                f"Please execute buyback manually.\n\n"
+                f"Claim TX: `{claim_tx_hash}`",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        
+        conn.close()
+        
+    except Exception as e:
+        logger.error(f"Error claiming fees: {e}")
+        await query.edit_message_text(f"❌ Error: {str(e)}")
+
+# Import actual contract interface functions
+from klik_factory_interface import (
+    get_pool_address,
+    check_claimable_fees,
+    claim_fees_from_pool,
+    execute_dok_buyback
+)
 
 def main():
     """Start the bot"""

@@ -125,10 +125,26 @@ class KlikTokenDeployer:
         total_balance = self.get_eth_balance()
         user_deposits = self.get_total_user_deposits()
         available_balance = self.get_available_balance()
+        available_for_free = self.get_available_balance_for_free_deploys()
+        
+        # Get earned balances
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_claim'"
+            )
+            earned_fees = float(cursor.fetchone()[0])
+            
+            cursor = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
+            )
+            platform_fees = float(cursor.fetchone()[0])
         
         print(f"💰 Total Balance: {total_balance:.4f} ETH")
         print(f"   • User deposits: {user_deposits:.4f} ETH (protected)")
+        print(f"   • Earned from claims: {earned_fees:.4f} ETH (protected)")
+        print(f"   • Platform fees: {platform_fees:.4f} ETH (protected)")
         print(f"   • Available for bot: {available_balance:.4f} ETH")
+        print(f"   • Available for FREE deploys: {available_for_free:.4f} ETH")
         
         # CRITICAL: Verify bot username is set correctly
         print(f"🏷️  Bot username: @{self.bot_username}")
@@ -334,6 +350,18 @@ class KlikTokenDeployer:
                 )
             ''')
             
+            # Add balance_sources table for tracking different balance types
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS balance_sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT, -- 'deposit', 'fee_claim', 'pay_per_deploy'
+                    amount REAL,
+                    tx_hash TEXT,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_username_date 
                 ON deployments(username, requested_at)
@@ -375,6 +403,42 @@ class KlikTokenDeployer:
         available = total_balance - (user_deposits * 1.05)  # 5% buffer for gas fluctuations
         
         return max(0, available)  # Never negative
+    
+    def get_available_balance_for_free_deploys(self) -> float:
+        """Get balance available for FREE deployments only
+        
+        This excludes:
+        - User deposits (protected for pay-per-deploy)
+        - Earned fees from claims (protected for bot owner)
+        - Only uses original bot funding
+        """
+        total_balance = self.get_eth_balance()
+        
+        # Get all protected balances
+        with sqlite3.connect(self.db_path) as conn:
+            # User deposits
+            cursor = conn.execute(
+                "SELECT COALESCE(SUM(balance), 0) FROM users WHERE balance > 0"
+            )
+            user_deposits = float(cursor.fetchone()[0])
+            
+            # Earned fees (from fee claims) - these belong to bot owner
+            cursor = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_claim'"
+            )
+            earned_fees = float(cursor.fetchone()[0])
+            
+            # Pay-per-deploy fees collected
+            cursor = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
+            )
+            deployment_fees = float(cursor.fetchone()[0])
+        
+        # Available for free deploys = total - all protected funds
+        protected_total = user_deposits + earned_fees + deployment_fees
+        available = total_balance - (protected_total * 1.05)  # 5% buffer
+        
+        return max(0, available)
     
     async def generate_salt_and_address(self, token_name: str, token_symbol: str) -> Tuple[str, str]:
         """Generate salt using Klik Finance API and calculate predicted address"""
@@ -562,6 +626,9 @@ class KlikTokenDeployer:
         # CRITICAL: Check bot's available balance for free/holder deployments
         available_bot_balance = self.get_available_balance()
         
+        # CRITICAL: Check bot's available balance for free/holder deployments
+        available_bot_balance_for_free = self.get_available_balance_for_free_deploys()
+        
         # Get today's deployment counts
         with sqlite3.connect(self.db_path) as conn:
             # Get or create daily limits
@@ -605,7 +672,7 @@ Need: {min_followers_for_free:,} followers for free deploys
 t.me/DeployOnKlik"""
             
             # SAFETY: Check if bot has enough balance for free deployments
-            if available_bot_balance < realistic_gas_cost * 1.1:
+            if available_bot_balance_for_free < realistic_gas_cost * 1.1:
                 # Bot doesn't have enough balance for free deployment
                 if user_balance >= total_cost:
                     return True, f"💰 Pay-per-deploy (bot low on funds - cost: {total_cost:.4f} ETH, your balance: {user_balance:.4f} ETH)"
@@ -635,7 +702,7 @@ Gas: {likely_gas_gwei:.1f} gwei (limit: {holder_gas_limit:.0f})
 Please wait for gas to drop or visit t.me/DeployOnKlik"""
             
             # SAFETY: Check if bot has enough balance for holder deployments
-            if available_bot_balance < realistic_gas_cost * 1.1:
+            if available_bot_balance_for_free < realistic_gas_cost * 1.1:
                 # Bot doesn't have enough balance for holder deployment
                 if user_balance >= total_cost:
                     return True, f"💰 Pay-per-deploy (bot low on funds - cost: {total_cost:.4f} ETH, your balance: {user_balance:.4f} ETH)"
@@ -1119,6 +1186,11 @@ Quick & easy deposits!"""
                             new_balance = result[0]
                             if fee > 0:
                                 print(f"💰 Deducted {total_deducted:.4f} ETH from balance (gas: {actual_gas_cost:.4f}, fee: {fee:.4f})")
+                                # Track platform fee as separate balance source
+                                conn.execute('''
+                                    INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+                                    VALUES ('pay_per_deploy', ?, ?, ?)
+                                ''', (fee, request.tx_hash, f"Platform fee from @{request.username}'s ${request.token_symbol}"))
                             else:
                                 print(f"🎯 Deducted {actual_gas_cost:.4f} ETH from holder balance (gas only, NO FEES!)")
                             print(f"   New balance: {new_balance:.4f} ETH")
