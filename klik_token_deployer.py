@@ -1694,6 +1694,7 @@ You sent: Missing $"""
         
         # Start monitoring
         monitor = TwitterMonitor(self)
+        self._monitor_instance = monitor  # Store for access in queue monitor
         await monitor.start_realtime_monitoring()
     
     async def queue_monitor(self):
@@ -1758,6 +1759,18 @@ You sent: Missing $"""
                         print(f"   • Total Balance: {total_balance:.4f} ETH")
                         print(f"   • User Deposits: {user_deposits:.4f} ETH (protected)")
                         print(f"   • Available: {available_balance:.4f} ETH")
+                        
+                        # Show TwitterAPI.io usage if monitoring is active
+                        try:
+                            from twitter_monitor import TwitterMonitor
+                            # Access the monitor instance if available
+                            if hasattr(self, '_monitor_instance'):
+                                monitor = self._monitor_instance
+                                tapi_calls = len([t for t in monitor.twitterapi_calls if current_ts - t < monitor.twitterapi_window])
+                                tapi_percentage = (tapi_calls / monitor.twitterapi_limit) * 100
+                                print(f"   • TwitterAPI.io: {tapi_calls}/{monitor.twitterapi_limit} API calls ({tapi_percentage:.0f}%) in 24h")
+                        except:
+                            pass
                         
                         if twitter_replies >= self.twitter_reply_limit * 0.8:  # 80% of limit
                             print(f"   ⚠️  TWITTER REPLY LIMIT: Only {self.twitter_reply_limit - twitter_replies} replies remaining!")

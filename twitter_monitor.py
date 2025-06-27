@@ -25,6 +25,11 @@ class TwitterMonitor:
         self.logger = deployer.logger
         self.bot_username = deployer.bot_username
         
+        # TwitterAPI.io rate limiting
+        self.twitterapi_calls = []  # Track API calls (not WebSocket)
+        self.twitterapi_limit = 90  # Stay under 100/24h limit
+        self.twitterapi_window = 86400  # 24 hours in seconds
+        
     async def start_realtime_monitoring(self):
         """Start real-time monitoring using third-party services (1-3 second response time)"""
         # Check which service to use
@@ -52,6 +57,10 @@ class TwitterMonitor:
         print("🔧 Checking Twitter filter rules...")
         rules = await filter_manager.get_rules()
         active_rules = [r for r in rules if r.get('is_effect', 0) == 1]
+        
+        print(f"📊 TwitterAPI.io Rate Limits:")
+        print(f"   • WebSocket: Unlimited (real-time stream)")
+        print(f"   • API calls: {self.twitterapi_limit}/24h (for missing data)")
         
         if not active_rules:
             print("⚠️  No active filter rules found!")
@@ -370,12 +379,23 @@ class TwitterMonitor:
     async def _fetch_parent_media_twitterapi(self, tweet_id: str) -> list:
         """Fetch parent tweet media using twitterapi.io"""
         try:
+            # Check TwitterAPI.io rate limit
+            now = time.time()
+            self.twitterapi_calls = [t for t in self.twitterapi_calls if now - t < self.twitterapi_window]
+            
+            if len(self.twitterapi_calls) >= self.twitterapi_limit:
+                self.logger.warning(f"TwitterAPI.io rate limit reached: {len(self.twitterapi_calls)}/{self.twitterapi_limit} in 24h")
+                return []
+            
             api_key = os.getenv('TWITTERAPI_IO_KEY')
             url = f"https://api.twitterapi.io/v1/tweets/{tweet_id}"
             headers = {"Authorization": f"Bearer {api_key}"}
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers) as response:
+                    # Track this API call
+                    self.twitterapi_calls.append(now)
+                    
                     if response.status == 200:
                         data = await response.json()
                         return data.get('media', [])
@@ -386,6 +406,14 @@ class TwitterMonitor:
     async def _fetch_user_info_twitterapi(self, user_id: str) -> Optional[Dict]:
         """Fetch user info from TwitterAPI.io API as fallback"""
         try:
+            # Check TwitterAPI.io rate limit
+            now = time.time()
+            self.twitterapi_calls = [t for t in self.twitterapi_calls if now - t < self.twitterapi_window]
+            
+            if len(self.twitterapi_calls) >= self.twitterapi_limit:
+                self.logger.warning(f"TwitterAPI.io rate limit reached: {len(self.twitterapi_calls)}/{self.twitterapi_limit} in 24h")
+                return None
+            
             api_key = os.getenv('TWITTERAPI_IO_KEY')
             url = f"https://api.twitterapi.io/twitter/user/info"
             headers = {
@@ -399,6 +427,9 @@ class TwitterMonitor:
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, params=params) as response:
+                    # Track this API call
+                    self.twitterapi_calls.append(now)
+                    
                     if response.status == 200:
                         data = await response.json()
                         
@@ -425,6 +456,14 @@ class TwitterMonitor:
     async def _fetch_tweet_details_twitterapi(self, tweet_id: str) -> Optional[Dict]:
         """Fetch tweet details including media from TwitterAPI.io"""
         try:
+            # Check TwitterAPI.io rate limit
+            now = time.time()
+            self.twitterapi_calls = [t for t in self.twitterapi_calls if now - t < self.twitterapi_window]
+            
+            if len(self.twitterapi_calls) >= self.twitterapi_limit:
+                self.logger.warning(f"TwitterAPI.io rate limit reached: {len(self.twitterapi_calls)}/{self.twitterapi_limit} in 24h")
+                return None
+            
             api_key = os.getenv('TWITTERAPI_IO_KEY')
             url = "https://api.twitterapi.io/twitter/tweets"
             headers = {
@@ -437,6 +476,9 @@ class TwitterMonitor:
             
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, headers=headers, params=params) as response:
+                    # Track this API call
+                    self.twitterapi_calls.append(now)
+                    
                     if response.status == 200:
                         data = await response.json()
                         tweets = data.get('tweets', [])
