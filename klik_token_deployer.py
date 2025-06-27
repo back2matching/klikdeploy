@@ -84,8 +84,19 @@ class KlikTokenDeployer:
         
         # Twitter reply rate limiting
         self.twitter_reply_history = []  # Track Twitter replies
-        self.twitter_reply_limit = 40  # Stay under Twitter's 50/15min limit
+        
+        # Set rate limit based on Twitter API tier
+        self.twitter_tier = os.getenv('TWITTER_API_TIER', 'free').lower()
+        tier_limits = {
+            'free': 40,      # Stay under 50/15min limit
+            'basic': 80,     # Stay under 100/15min limit  
+            'pro': 250,      # Stay under 300/15min limit
+            'enterprise': 1000  # Essentially unlimited
+        }
+        self.twitter_reply_limit = tier_limits.get(self.twitter_tier, 40)
         self.twitter_reply_window = 900  # 15 minutes in seconds
+        
+        print(f"🐦 Twitter API Tier: {self.twitter_tier.upper()} ({self.twitter_reply_limit} replies/15min)")
         
         # Queue system for deployments
         self.deployment_queue = Queue(maxsize=10)  # Max 10 pending deployments
@@ -128,7 +139,8 @@ class KlikTokenDeployer:
             os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
         ]
         if all(twitter_keys):
-            print("✅ Twitter replies: ENABLED")
+            print(f"✅ Twitter replies: ENABLED ({self.twitter_tier.upper()} tier)")
+            print(f"   → Rate limit: {self.twitter_reply_limit} replies per 15 minutes")
         else:
             print("⚠️  Twitter replies: DISABLED")
         
