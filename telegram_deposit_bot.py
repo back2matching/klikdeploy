@@ -244,12 +244,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         deploy_total = deploy_gas_cost + deploy_fee
         
         # Get DOK holder balance if available
-        cursor = conn.execute(
+        conn2 = sqlite3.connect('deployments.db')
+        cursor2 = conn2.execute(
             "SELECT holder_balance FROM users WHERE telegram_id = ?",
             (telegram_id,)
         )
-        holder_balance_result = cursor.fetchone()
+        holder_balance_result = cursor2.fetchone()
         dok_balance = holder_balance_result[0] if holder_balance_result else 0
+        conn2.close()
         
         # Determine user status and what's active for them specifically
         if is_holder:
