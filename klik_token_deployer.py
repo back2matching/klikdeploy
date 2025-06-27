@@ -2063,7 +2063,6 @@ Your token will deploy soon ⏳"""
             # Extract key info from instructions
             if "System limit reached" in instructions:
                 # Extract the limit number if possible
-                import re
                 limit_match = re.search(r'\((\d+) deploys/hour\)', instructions)
                 limit_num = limit_match.group(1) if limit_match else "30"
                 reply_text = f"""@{username} System busy! ({limit_num} deploys/hour limit)
