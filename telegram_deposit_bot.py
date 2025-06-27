@@ -1260,11 +1260,14 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
         conn.close()
 
 async def monitor_deposits():
-    """Background task to monitor deposits - runs every 30 seconds"""
-    logger.info("Starting deposit monitor...")
+    """Smart deposit monitor with adaptive polling intervals"""
+    logger.info("Starting smart deposit monitor...")
     
-    # Track last checked block
+    # Track last checked block and activity
     last_checked_block = None
+    no_activity_count = 0
+    base_interval = 10  # Start with 10 seconds
+    max_interval = 300  # Max 5 minutes between checks
     
     while True:
         try:
@@ -1280,10 +1283,15 @@ async def monitor_deposits():
             
             # Don't check if no new blocks
             if from_block > current_block:
-                await asyncio.sleep(30)
+                # Calculate interval for waiting
+                if no_activity_count == 0:
+                    interval = base_interval
+                else:
+                    interval = min(base_interval * (2 ** min(no_activity_count - 1, 5)), max_interval)
+                await asyncio.sleep(interval)
                 continue
             
-            logger.info(f"Checking deposits from block {from_block} to {current_block}")
+            logger.debug(f"Checking deposits from block {from_block} to {current_block}")
             
             # Get all transfers TO the bot wallet
             response = requests.post(RPC_URL, json={
@@ -1306,6 +1314,9 @@ async def monitor_deposits():
                     
                     if transfers:
                         logger.info(f"Found {len(transfers)} potential deposits")
+                    
+                    # Track if we found any valid deposits
+                    found_valid_deposits = False
                     
                     # Connect to database
                     conn = sqlite3.connect('deployments.db')
@@ -1374,6 +1385,7 @@ async def monitor_deposits():
                             ''', (value, telegram_id))
                             
                             conn.commit()
+                            found_valid_deposits = True
                             
                             # Send notification to user if possible
                             try:
@@ -1410,18 +1422,39 @@ async def monitor_deposits():
                     
                     conn.close()
                     
+                    # Update activity counter
+                    if found_valid_deposits:
+                        no_activity_count = 0
+                        logger.info(f"Found deposits - resetting to {base_interval}s interval")
+                    else:
+                        no_activity_count += 1
+                        next_interval = min(base_interval * (2 ** min(no_activity_count - 1, 5)), max_interval)
+                        if no_activity_count > 1:
+                            logger.debug(f"No deposits found ({no_activity_count}x) - next check in {next_interval}s")
+                    
                 # Update last checked block
                 last_checked_block = current_block
-                logger.info(f"Deposit check complete. Last block: {last_checked_block}")
+                logger.debug(f"Deposit check complete. Last block: {last_checked_block}")
                 
             else:
                 logger.error(f"Alchemy API error: {response.status_code} - {response.text}")
+                # On API error, don't increase backoff too much
+                no_activity_count = min(no_activity_count + 1, 3)
                 
         except Exception as e:
             logger.error(f"Monitor error: {e}")
+            # On error, moderate backoff
+            no_activity_count = min(no_activity_count + 1, 3)
             
-        # Wait before next check
-        await asyncio.sleep(30)
+        # Calculate next interval based on activity
+        if no_activity_count == 0:
+            interval = base_interval
+        else:
+            # Exponential backoff: 10s, 20s, 40s, 80s, 160s, max 300s
+            interval = min(base_interval * (2 ** min(no_activity_count - 1, 5)), max_interval)
+            
+        # Wait before next check with adaptive interval
+        await asyncio.sleep(interval)
 
 async def withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Legacy command - redirect to button interface"""

@@ -6,6 +6,7 @@ Handles fee claiming and pool interactions
 
 import os
 import json
+import asyncio
 from typing import Optional, Dict, Tuple
 from web3 import Web3
 from eth_account import Account
@@ -234,11 +235,16 @@ class KlikFactoryInterface:
         try:
             # Method 1: Check if there's a Uniswap V3 pool
             # Search for pool creation events
+            # Get current block
+            current_block = self.w3.eth.block_number
+            # Start from a reasonable recent block (e.g., 1 million blocks back ~4 months)
+            from_block = max(0, current_block - 1000000)
+            
             response = requests.post(self.rpc_url, json={
                 "jsonrpc": "2.0",
                 "method": "eth_getLogs",
                 "params": [{
-                    "fromBlock": "0x0",
+                    "fromBlock": hex(from_block),
                     "toBlock": "latest",
                     "address": KLIK_FACTORY,
                     "topics": [
@@ -323,71 +329,82 @@ class KlikFactoryInterface:
             token_address = Web3.to_checksum_address(token_address)
             
             # Use Alchemy's enhanced API to find pool creation events
-            response = requests.post(self.rpc_url, json={
-                "jsonrpc": "2.0",
-                "method": "eth_getLogs",
-                "params": [{
-                    "fromBlock": "0x13B8A00",  # Block ~20M (recent pools)
-                    "toBlock": "latest",
-                    "address": KLIK_FACTORY,
-                    "topics": [
-                        # PairCreated event signature
-                        "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9",
-                        None,  # token0
-                        None   # token1
-                    ]
-                }],
-                "id": 1
-            })
+            # Get current block and work in chunks to avoid hitting limits
+            current_block = self.w3.eth.block_number
+            start_block = 0x13B8A00  # Block ~20M
+            chunk_size = 500  # Alchemy's limit
             
-            if response.status_code == 200:
-                logs = response.json().get('result', [])
+            all_logs = []
+            
+            # Process in chunks of 500 blocks
+            for from_block in range(start_block, current_block, chunk_size):
+                to_block = min(from_block + chunk_size - 1, current_block)
                 
-                for log in logs:
-                    # Decode the log to get tokens and pool
-                    data = log['data']
-                    # Pool address is first 32 bytes (after 0x)
-                    pool_address = '0x' + data[26:66]
-                    # Fee is next 32 bytes
-                    # TokenId (pair index) is last 32 bytes
-                    token_id_hex = data[-64:]
-                    token_id = int(token_id_hex, 16)
+                response = requests.post(self.rpc_url, json={
+                    "jsonrpc": "2.0",
+                    "method": "eth_getLogs",
+                    "params": [{
+                        "fromBlock": hex(from_block),
+                        "toBlock": hex(to_block),
+                        "address": KLIK_FACTORY,
+                        "topics": [
+                            # PairCreated event signature
+                            "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9",
+                            None,  # token0
+                            None   # token1
+                        ]
+                    }],
+                    "id": 1
+                })
+                
+                if response.status_code == 200:
+                    logs = response.json().get('result', [])
+                    all_logs.extend(logs)
                     
-                    # Check if this pool contains our token
-                    # The topics contain token0 and token1 addresses
-                    if len(log['topics']) >= 3:
-                        token0 = '0x' + log['topics'][1][-40:]
-                        token1 = '0x' + log['topics'][2][-40:]
+                    # Check if we found the token in this batch
+                    for log in logs:
+                        # Check if this log contains our token
+                        data = log['data']
+                        pool_address = '0x' + data[26:66]
+                        token_id_hex = data[-64:]
+                        token_id = int(token_id_hex, 16)
                         
-                        if token_address.lower() in [token0.lower(), token1.lower()]:
-                            logger.info(f"Found tokenId {token_id} for {token_address} in pool {pool_address}")
+                        if len(log['topics']) >= 3:
+                            token0 = '0x' + log['topics'][1][-40:]
+                            token1 = '0x' + log['topics'][2][-40:]
                             
-                            # Cache this for future use
-                            KNOWN_TOKEN_IDS[token_address] = token_id
-                            
-                            # Also update database if available
-                            try:
-                                import sqlite3
-                                conn = sqlite3.connect('deployments.db')
+                            if token_address.lower() in [token0.lower(), token1.lower()]:
+                                logger.info(f"Found tokenId {token_id} for {token_address} in pool {pool_address}")
                                 
-                                # Check if token_id column exists, if not add it
-                                cursor = conn.execute("PRAGMA table_info(deployed_tokens)")
-                                columns = [row[1] for row in cursor.fetchall()]
+                                # Cache and return immediately
+                                KNOWN_TOKEN_IDS[token_address] = token_id
                                 
-                                if 'token_id' not in columns:
-                                    conn.execute("ALTER TABLE deployed_tokens ADD COLUMN token_id INTEGER")
+                                # Update database
+                                try:
+                                    import sqlite3
+                                    conn = sqlite3.connect('deployments.db')
+                                    
+                                    cursor = conn.execute("PRAGMA table_info(deployed_tokens)")
+                                    columns = [row[1] for row in cursor.fetchall()]
+                                    
+                                    if 'token_id' not in columns:
+                                        conn.execute("ALTER TABLE deployed_tokens ADD COLUMN token_id INTEGER")
+                                    
+                                    conn.execute(
+                                        "UPDATE deployed_tokens SET token_id = ? WHERE token_address = ?",
+                                        (token_id, token_address)
+                                    )
+                                    conn.commit()
+                                    conn.close()
+                                except Exception as db_error:
+                                    logger.warning(f"Could not update database: {db_error}")
                                 
-                                # Update the token_id
-                                conn.execute(
-                                    "UPDATE deployed_tokens SET token_id = ? WHERE token_address = ?",
-                                    (token_id, token_address)
-                                )
-                                conn.commit()
-                                conn.close()
-                            except Exception as db_error:
-                                logger.warning(f"Could not update database: {db_error}")
-                            
-                            return token_id
+                                return token_id
+                else:
+                    logger.warning(f"Failed to get logs for block range {from_block}-{to_block}: {response.status_code}")
+                    
+                # Small delay to avoid rate limits
+                await asyncio.sleep(0.1)
             
             return None
             
