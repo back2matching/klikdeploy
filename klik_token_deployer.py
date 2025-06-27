@@ -85,22 +85,22 @@ class KlikTokenDeployer:
         # Twitter reply rate limiting
         self.twitter_reply_history = []  # Track Twitter replies
         
-        # Twitter API v2 rate limits
-        # 1667 requests / 24 hours PER APP = ~69/hour = ~17/15min
-        # We'll be conservative and use 15 per 15 minutes to stay safe
-        self.twitter_tier = os.getenv('TWITTER_API_TIER', 'v2').lower()
+        # Twitter API Basic tier limits ($200/month)
+        # 50,000 posts/month at app level = ~1667/day = ~69/hour = ~17/15min
+        # 3,000 posts/month at user level = ~100/day
+        self.twitter_tier = os.getenv('TWITTER_API_TIER', 'basic').lower()
         tier_limits = {
-            'v2': 15,         # Twitter v2 API: 1667/day = ~17/15min (conservative)
+            'v2': 15,         # Free tier: conservative
             'free': 15,       # Same as v2
-            'basic': 50,      # If you have Basic tier ($100/month)
-            'pro': 150,       # If you have Pro tier  
+            'basic': 60,      # Basic tier: 50k/month = ~69/hour (conservative at 60)
+            'pro': 150,       # Pro tier  
             'enterprise': 500 # Enterprise tier
         }
-        self.twitter_reply_limit = tier_limits.get(self.twitter_tier, 15)
+        self.twitter_reply_limit = tier_limits.get(self.twitter_tier, 60)
         self.twitter_reply_window = 900  # 15 minutes in seconds
         
-        # Also track daily limit
-        self.twitter_daily_limit = 1600  # Stay under 1667/day limit
+        # Also track daily limit - Basic tier has much higher limits
+        self.twitter_daily_limit = 1500  # Conservative under 1667/day limit
         self.twitter_daily_window = 86400  # 24 hours in seconds
         
         print(f"🐦 Twitter API: {self.twitter_reply_limit} replies/15min, {self.twitter_daily_limit}/day")
