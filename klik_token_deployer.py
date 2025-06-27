@@ -1593,31 +1593,36 @@ You sent: Missing $"""
             
             print(f"=" * 50)
             
+            # ALWAYS generate vanity salt for 0x69 addresses (not just manual mode!)
+            print("\n🔮 Generating vanity address...")
+            try:
+                salt, predicted_address = await self.generate_salt_and_address(
+                    request.token_name, 
+                    request.token_symbol
+                )
+                # Store in request for later use
+                request.salt = salt
+                request.predicted_address = predicted_address
+                
+                print(f"🎯 Vanity address generated: {predicted_address}")
+                print(f"   (Address starts with 0x{predicted_address[2:4]})")
+                
+            except Exception as e:
+                print(f"⚠️  Failed to generate vanity address: {e}")
+                print("   Will use random salt instead")
+            
             # Only ask for confirmation if running in interactive mode AND they can deploy
             if os.getenv('AUTO_DEPLOY', 'false').lower() != 'true':
-                # Generate salt and predict address for manual deployments
-                print("\n🔮 Generating vanity address...")
-                try:
-                    salt, predicted_address = await self.generate_salt_and_address(
-                        request.token_name, 
-                        request.token_symbol
-                    )
-                    # Store in request for later use
-                    request.salt = salt
-                    request.predicted_address = predicted_address
-                    
+                # Show detailed preview for manual deployments
+                if request.predicted_address:
                     print(f"\n{'='*60}")
                     print(f"🎯 TOKEN WILL BE DEPLOYED AT:")
-                    print(f"   {predicted_address}")
+                    print(f"   {request.predicted_address}")
                     print(f"{'='*60}")
                     print(f"📝 Copy this address NOW to set up buy orders!")
-                    print(f"📈 DexScreener: https://dexscreener.com/ethereum/{predicted_address}")
+                    print(f"📈 DexScreener: https://dexscreener.com/ethereum/{request.predicted_address}")
                     print(f"⏱️  You have time before confirming deployment")
                     print(f"{'='*60}")
-                    
-                except Exception as e:
-                    print(f"⚠️  Failed to generate vanity address: {e}")
-                    print("   Deployment will proceed with random salt if confirmed")
                 
                 confirm = input("\n⚠️  Deploy this token? (y/N): ")
                 if confirm.lower() != 'y':
@@ -1841,6 +1846,11 @@ You sent: Missing $"""
                         continue
                     
                     print(f"✅ Re-validated eligibility: {rate_msg}")
+                    
+                    # Show if using vanity address
+                    if request.predicted_address:
+                        print(f"🎯 Deploying with vanity address: {request.predicted_address}")
+                        print(f"   (Starts with 0x{request.predicted_address[2:4]})")
                     
                     # Process the deployment
                     success = await self.deploy_token(request)
