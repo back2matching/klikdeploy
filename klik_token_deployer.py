@@ -389,6 +389,11 @@ class KlikTokenDeployer:
         "@DeployOnKlik $DOG - DogeCoin" -> {symbol: "DOG", name: "DogeCoin"}
         "@DeployOnKlik $CAT + CatCoin" -> {symbol: "CAT", name: "CatCoin"}
         "@DeployOnKlik PEPE" -> None (no $ symbol - rejected)
+        
+        Returns:
+            Dict with 'symbol' and 'name' if valid
+            Dict with 'error' and 'error_type' if invalid
+            None if not a deployment attempt
         """
         # Remove mentions and clean up
         text = tweet_text.strip()
@@ -406,6 +411,26 @@ class KlikTokenDeployer:
         # BLOCK DOK TICKER - prevent spam of the bot's own token
         if symbol == 'DOK':
             self.logger.warning(f"Blocked DOK ticker deployment attempt from tweet: {tweet_text[:50]}...")
+            return {'error': 'DOK ticker is reserved', 'error_type': 'reserved_ticker'}
+        
+        # Check symbol length BEFORE other validations
+        if len(symbol) > 10:
+            return {
+                'error': f'Symbol too long ({len(symbol)} chars, max 10)',
+                'error_type': 'symbol_too_long',
+                'symbol_attempted': symbol
+            }
+        
+        # Check if symbol is alphanumeric (allowing underscores)
+        if not symbol.replace('_', '').isalnum():
+            return {
+                'error': 'Symbol must be letters and numbers only',
+                'error_type': 'invalid_characters',
+                'symbol_attempted': symbol
+            }
+        
+        # Additional validation
+        if not symbol:
             return None
         
         # Look for name after a dash or plus sign, but stop at URLs or mentions
@@ -421,11 +446,8 @@ class KlikTokenDeployer:
         else:
             name = symbol
         
-        # Validation
-        if not symbol or len(symbol) > 10 or not symbol.replace('_', '').isalnum():
-            return None
-        
-        if not name or len(name) > 30:
+        # Validate name length
+        if len(name) > 30:
             name = symbol
         
         return {
@@ -1308,22 +1330,16 @@ You sent: Missing $"""
             
             # Parse the tweet
             token_info = self.parse_tweet_for_token(tweet_text)
-            if not token_info:
-                # Special check for DOK ticker attempts - silently ignore
-                if '$DOK' in tweet_text.upper():
-                    print(f"🚫 Blocked DOK ticker deployment from @{username} (ignored silently)")
-                    self.logger.warning(f"Ignored DOK deployment attempt from @{username}")
-                    return "❌ DOK ticker blocked (ignored)"
-                
+            
+            # Handle different parse results
+            if token_info is None:
+                # Not a deployment attempt (no $ symbol)
                 # Check if this looks like a deployment attempt before replying
                 cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip().lower()
                 
                 # Only reply if they:
-                # 1. Used $ (even incorrectly)
-                # 2. Used very explicit deployment keywords
-                # 3. The tweet is more than just a few words
-                
-                has_dollar_sign = '$' in tweet_text
+                # 1. Used very explicit deployment keywords
+                # 2. The tweet is more than just a few words
                 
                 # More strict keywords - must be very clear deployment intent
                 explicit_keywords = [
@@ -1338,8 +1354,8 @@ You sent: Missing $"""
                 has_substance = word_count >= 3  # At least 3 words after removing mention
                 
                 # Only send format help if VERY clear they're trying to deploy
-                if has_dollar_sign or (has_explicit_keyword and has_substance):
-                    error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
+                if has_explicit_keyword and has_substance:
+                    error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name"
                     
                     # Send Twitter reply to help the user
                     await self.send_twitter_reply_format_error(tweet_id, username, tweet_text)
@@ -1350,180 +1366,214 @@ You sent: Missing $"""
                     self.logger.info(f"Ignoring conversation mention from @{username}: {tweet_text[:100]}")
                     return "✅ Ignored - not a deployment request"
             
-            # Get image - prioritize deployment tweet's own image over parent tweet
-            image_url = None
+            # Check if it's an error response
+            elif 'error' in token_info:
+                error_type = token_info.get('error_type', 'unknown')
+                error_msg = token_info.get('error', 'Invalid format')
+                
+                if error_type == 'reserved_ticker':
+                    # DOK ticker blocked - log but don't reply
+                    print(f"🚫 Blocked DOK ticker deployment from @{username} (ignored silently)")
+                    self.logger.warning(f"Ignored DOK deployment attempt from @{username}")
+                    return "❌ DOK ticker blocked (ignored)"
+                
+                elif error_type == 'symbol_too_long':
+                    symbol = token_info.get('symbol_attempted', '')
+                    specific_msg = f"❌ Symbol too long! ${symbol} has {len(symbol)} characters (max 10)"
+                    
+                    # Send specific error reply
+                    await self.send_twitter_reply_specific_error(tweet_id, username, specific_msg)
+                    return f"❌ {error_msg}"
+                
+                elif error_type == 'invalid_characters':
+                    symbol = token_info.get('symbol_attempted', '')
+                    specific_msg = f"❌ Invalid symbol! ${symbol} contains invalid characters. Use letters and numbers only"
+                    
+                    # Send specific error reply
+                    await self.send_twitter_reply_specific_error(tweet_id, username, specific_msg)
+                    return f"❌ {error_msg}"
+                
+                else:
+                    # Generic error
+                    await self.send_twitter_reply_format_error(tweet_id, username, tweet_text)
+                    return f"❌ {error_msg}"
             
-            # First, check if deployment tweet itself has an image
-            if 'media' in tweet_data and tweet_data['media']:
-                for media in tweet_data['media']:
-                    if media.get('type') == 'photo':
-                        image_url = media.get('url')
-                        self.logger.info(f"Using image from deployment tweet: {image_url}")
-                        break
-            
-            # If no image in deployment tweet and it's a reply, check parent tweet
-            if not image_url and parent_tweet_id:
-                if 'parent_media' in tweet_data and tweet_data['parent_media']:
-                    for media in tweet_data['parent_media']:
+            # Valid token info - proceed with deployment
+            else:
+                # Get image - prioritize deployment tweet's own image over parent tweet
+                image_url = None
+                
+                # First, check if deployment tweet itself has an image
+                if 'media' in tweet_data and tweet_data['media']:
+                    for media in tweet_data['media']:
                         if media.get('type') == 'photo':
                             image_url = media.get('url')
-                            self.logger.info(f"Using image from parent tweet: {image_url}")
+                            self.logger.info(f"Using image from deployment tweet: {image_url}")
                             break
-            
-            # Get follower count from tweet data (needed for DeploymentRequest)
-            follower_count = tweet_data.get('follower_count', 0)
-            
-            # Create deployment request
-            request = DeploymentRequest(
-                tweet_id=tweet_id,
-                username=username,
-                token_name=token_info['name'],
-                token_symbol=token_info['symbol'],
-                requested_at=datetime.now(),
-                tweet_url=tweet_url,
-                parent_tweet_id=parent_tweet_id,
-                image_url=image_url,
-                follower_count=follower_count
-            )
-            
-            # Log the deployment request details
-            self.logger.info(f"Processing deployment request: @{username} - {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}")
-            
-            # Show deployment preview and ask for confirmation
-            print(f"\n📋 DEPLOYMENT PREVIEW")
-            print(f"=" * 50)
-            print(f"💰 Token: {request.token_name} ({request.token_symbol})")
-            print(f"👤 User: @{request.username}")
-            print(f"📝 Tweet: {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}")
-            print(f"🔗 Tweet: {request.tweet_url}")
-            if request.image_url:
-                print(f"🖼️  Image: ✅ Found ({request.image_url[:50]}...)")
-            else:
-                print(f"🖼️  Image: ❌ Not found")
-            
-            # Get current gas price for estimate
-            current_gas_price = self.w3.eth.gas_price
-            current_gas_gwei = float(self.w3.from_wei(current_gas_price, 'gwei'))
-            # Use realistic gas estimate for preview
-            estimated_gas_units = 6_500_000  # Typical for Klik factory deployments
-            estimated_cost = float(self.w3.from_wei(current_gas_price * estimated_gas_units, 'ether'))
-            
-            print(f"⛽ Gas Price: {current_gas_gwei:.1f} gwei")
-            print(f"💸 Est. Gas Cost: {estimated_cost:.4f} ETH (~${estimated_cost * 2420:.2f})")
-            
-            # Show balance breakdown
-            total_balance = self.get_eth_balance()
-            user_deposits = self.get_total_user_deposits()
-            available_balance = self.get_available_balance()
-            
-            print(f"💰 Bot Total Balance: {total_balance:.4f} ETH")
-            print(f"   • User deposits: {user_deposits:.4f} ETH (protected)")
-            print(f"   • Available for bot: {available_balance:.4f} ETH")
-            print(f"👤 User Balance: {self.get_user_balance(username):.4f} ETH")
-            
-            # Check rate limits to show status
-            can_deploy, rate_msg = self.check_rate_limits(username, follower_count)
-            if not can_deploy:
-                print(f"\n⚠️  {rate_msg}")
-                # Don't even ask for confirmation if they can't deploy
-                print(f"=" * 50)
-                print("\n❌ Cannot deploy - sending instructions via Twitter reply...")
                 
-                # Send instructions immediately
-                await self.send_twitter_reply_instructions(tweet_id, username, rate_msg)
-                return f"❌ Rate limit failed: {rate_msg}"
-            else:
-                # Show what type of deployment this will be
-                if "Free deployment allowed" in rate_msg:
-                    print(f"\n✅ {rate_msg}")
-                    print("🎉 Bot will pay the gas!")
-                elif "Holder deployment allowed" in rate_msg:
-                    print(f"\n🎯 {rate_msg}")
-                    print("🎉 Bot will pay the gas (holder benefit)!")
-                elif "Pay-per-deploy" in rate_msg:
-                    print(f"\n💰 {rate_msg}")
-            
-            print(f"=" * 50)
-            
-            # ALWAYS generate vanity salt for 0x69 addresses (not just manual mode!)
-            print("\n🔮 Generating vanity address...")
-            try:
-                salt, predicted_address = await self.generate_salt_and_address(
-                    request.token_name, 
-                    request.token_symbol
+                # If no image in deployment tweet and it's a reply, check parent tweet
+                if not image_url and parent_tweet_id:
+                    if 'parent_media' in tweet_data and tweet_data['parent_media']:
+                        for media in tweet_data['parent_media']:
+                            if media.get('type') == 'photo':
+                                image_url = media.get('url')
+                                self.logger.info(f"Using image from parent tweet: {image_url}")
+                                break
+                
+                # Get follower count from tweet data (needed for DeploymentRequest)
+                follower_count = tweet_data.get('follower_count', 0)
+                
+                # Create deployment request
+                request = DeploymentRequest(
+                    tweet_id=tweet_id,
+                    username=username,
+                    token_name=token_info['name'],
+                    token_symbol=token_info['symbol'],
+                    requested_at=datetime.now(),
+                    tweet_url=tweet_url,
+                    parent_tweet_id=parent_tweet_id,
+                    image_url=image_url,
+                    follower_count=follower_count
                 )
-                # Store in request for later use
-                request.salt = salt
-                request.predicted_address = predicted_address
                 
-                print(f"🎯 Vanity address generated: {predicted_address}")
-                print(f"   (Address starts with 0x{predicted_address[2:4]})")
+                # Log the deployment request details
+                self.logger.info(f"Processing deployment request: @{username} - {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}")
                 
-            except Exception as e:
-                print(f"⚠️  Failed to generate vanity address: {e}")
-                print("   Will use random salt instead")
-            
-            # Only ask for confirmation if running in interactive mode AND they can deploy
-            if os.getenv('AUTO_DEPLOY', 'false').lower() != 'true':
-                # Show detailed preview for manual deployments
-                if request.predicted_address:
-                    print(f"\n{'='*60}")
-                    print(f"🎯 TOKEN WILL BE DEPLOYED AT:")
-                    print(f"   {request.predicted_address}")
-                    print(f"{'='*60}")
-                    print(f"📝 Copy this address NOW to set up buy orders!")
-                    print(f"📈 DexScreener: https://dexscreener.com/ethereum/{request.predicted_address}")
-                    print(f"⏱️  You have time before confirming deployment")
-                    print(f"{'='*60}")
+                # Show deployment preview and ask for confirmation
+                print(f"\n📋 DEPLOYMENT PREVIEW")
+                print(f"=" * 50)
+                print(f"💰 Token: {request.token_name} ({request.token_symbol})")
+                print(f"👤 User: @{request.username}")
+                print(f"📝 Tweet: {tweet_text[:100]}{'...' if len(tweet_text) > 100 else ''}")
+                print(f"🔗 Tweet: {request.tweet_url}")
+                if request.image_url:
+                    print(f"🖼️  Image: ✅ Found ({request.image_url[:50]}...)")
+                else:
+                    print(f"🖼️  Image: ❌ Not found")
                 
-                confirm = input("\n⚠️  Deploy this token? (y/N): ")
-                if confirm.lower() != 'y':
-                    print("❌ Deployment cancelled by user")
+                # Get current gas price for estimate
+                current_gas_price = self.w3.eth.gas_price
+                current_gas_gwei = float(self.w3.from_wei(current_gas_price, 'gwei'))
+                # Use realistic gas estimate for preview
+                estimated_gas_units = 6_500_000  # Typical for Klik factory deployments
+                estimated_cost = float(self.w3.from_wei(current_gas_price * estimated_gas_units, 'ether'))
+                
+                print(f"⛽ Gas Price: {current_gas_gwei:.1f} gwei")
+                print(f"💸 Est. Gas Cost: {estimated_cost:.4f} ETH (~${estimated_cost * 2420:.2f})")
+                
+                # Show balance breakdown
+                total_balance = self.get_eth_balance()
+                user_deposits = self.get_total_user_deposits()
+                available_balance = self.get_available_balance()
+                
+                print(f"💰 Bot Total Balance: {total_balance:.4f} ETH")
+                print(f"   • User deposits: {user_deposits:.4f} ETH (protected)")
+                print(f"   • Available for bot: {available_balance:.4f} ETH")
+                print(f"👤 User Balance: {self.get_user_balance(username):.4f} ETH")
+                
+                # Check rate limits to show status
+                can_deploy, rate_msg = self.check_rate_limits(username, follower_count)
+                if not can_deploy:
+                    print(f"\n⚠️  {rate_msg}")
+                    # Don't even ask for confirmation if they can't deploy
+                    print(f"=" * 50)
+                    print("\n❌ Cannot deploy - sending instructions via Twitter reply...")
                     
-                    # For testing: Still try to send Twitter reply as if deployment failed
-                    if os.getenv('TEST_TWITTER_REPLIES', 'false').lower() == 'true':
-                        print("\n🧪 TEST MODE: Attempting Twitter reply despite cancellation...")
-                        request.status = "cancelled"
-                        await self.send_twitter_reply(request, success=False)
+                    # Send instructions immediately
+                    await self.send_twitter_reply_instructions(tweet_id, username, rate_msg)
+                    return f"❌ Rate limit failed: {rate_msg}"
+                else:
+                    # Show what type of deployment this will be
+                    if "Free deployment allowed" in rate_msg:
+                        print(f"\n✅ {rate_msg}")
+                        print("🎉 Bot will pay the gas!")
+                    elif "Holder deployment allowed" in rate_msg:
+                        print(f"\n🎯 {rate_msg}")
+                        print("🎉 Bot will pay the gas (holder benefit)!")
+                    elif "Pay-per-deploy" in rate_msg:
+                        print(f"\n💰 {rate_msg}")
+                
+                print(f"=" * 50)
+                
+                # ALWAYS generate vanity salt for 0x69 addresses (not just manual mode!)
+                print("\n🔮 Generating vanity address...")
+                try:
+                    salt, predicted_address = await self.generate_salt_and_address(
+                        request.token_name, 
+                        request.token_symbol
+                    )
+                    # Store in request for later use
+                    request.salt = salt
+                    request.predicted_address = predicted_address
                     
-                    return "❌ Deployment cancelled by user"
-            
-            # Save to DB
-            self.db.save_deployment(request)
-            
-            # Add to deployment queue instead of deploying directly
-            try:
-                # Check if queue is full
-                if self.deployment_queue.full():
-                    print(f"⚠️  Queue is full! ({self.deployment_queue.maxsize} deployments pending)")
+                    print(f"🎯 Vanity address generated: {predicted_address}")
+                    print(f"   (Address starts with 0x{predicted_address[2:4]})")
+                    
+                except Exception as e:
+                    print(f"⚠️  Failed to generate vanity address: {e}")
+                    print("   Will use random salt instead")
+                
+                # Only ask for confirmation if running in interactive mode AND they can deploy
+                if os.getenv('AUTO_DEPLOY', 'false').lower() != 'true':
+                    # Show detailed preview for manual deployments
+                    if request.predicted_address:
+                        print(f"\n{'='*60}")
+                        print(f"🎯 TOKEN WILL BE DEPLOYED AT:")
+                        print(f"   {request.predicted_address}")
+                        print(f"{'='*60}")
+                        print(f"📝 Copy this address NOW to set up buy orders!")
+                        print(f"📈 DexScreener: https://dexscreener.com/ethereum/{request.predicted_address}")
+                        print(f"⏱️  You have time before confirming deployment")
+                        print(f"{'='*60}")
+                    
+                    confirm = input("\n⚠️  Deploy this token? (y/N): ")
+                    if confirm.lower() != 'y':
+                        print("❌ Deployment cancelled by user")
+                        
+                        # For testing: Still try to send Twitter reply as if deployment failed
+                        if os.getenv('TEST_TWITTER_REPLIES', 'false').lower() == 'true':
+                            print("\n🧪 TEST MODE: Attempting Twitter reply despite cancellation...")
+                            request.status = "cancelled"
+                            await self.send_twitter_reply(request, success=False)
+                        
+                        return "❌ Deployment cancelled by user"
+                
+                # Save to DB
+                self.db.save_deployment(request)
+                
+                # Add to deployment queue instead of deploying directly
+                try:
+                    # Check if queue is full
+                    if self.deployment_queue.full():
+                        print(f"⚠️  Queue is full! ({self.deployment_queue.maxsize} deployments pending)")
+                        await self.send_twitter_reply_instructions(tweet_id, username, 
+                            "⏳ System is busy! Too many deployments in queue. Please try again in a few minutes.")
+                        return "❌ Queue is full"
+                    
+                    # Check if user already has a pending deployment
+                    async with self.deployment_lock:
+                        if username.lower() in self.active_deployments:
+                            print(f"⏳ User @{username} already has active deployment")
+                            return "❌ User already has active deployment"
+                    
+                    # Add to queue
+                    await self.deployment_queue.put(request)
+                    queue_position = self.deployment_queue.qsize()
+                    
+                    print(f"📥 Added to queue: @{username}'s ${request.token_symbol} (position: {queue_position})")
+                    
+                    # If queue is getting large, warn the user
+                    if queue_position > 5:
+                        # Send a quick status update
+                        await self._send_queue_status_reply(tweet_id, username, queue_position)
+                    
+                    return f"✅ Deployment queued (position: {queue_position})"
+                    
+                except asyncio.QueueFull:
                     await self.send_twitter_reply_instructions(tweet_id, username, 
-                        "⏳ System is busy! Too many deployments in queue. Please try again in a few minutes.")
+                        "⏳ System overloaded! Please try again in a few minutes.")
                     return "❌ Queue is full"
-                
-                # Check if user already has a pending deployment
-                async with self.deployment_lock:
-                    if username.lower() in self.active_deployments:
-                        print(f"⏳ User @{username} already has active deployment")
-                        return "❌ User already has active deployment"
-                
-                # Add to queue
-                await self.deployment_queue.put(request)
-                queue_position = self.deployment_queue.qsize()
-                
-                print(f"📥 Added to queue: @{username}'s ${request.token_symbol} (position: {queue_position})")
-                
-                # If queue is getting large, warn the user
-                if queue_position > 5:
-                    # Send a quick status update
-                    await self._send_queue_status_reply(tweet_id, username, queue_position)
-                
-                return f"✅ Deployment queued (position: {queue_position})"
-                
-            except asyncio.QueueFull:
-                await self.send_twitter_reply_instructions(tweet_id, username, 
-                    "⏳ System overloaded! Please try again in a few minutes.")
-                return "❌ Queue is full"
-                
+                    
         except Exception as e:
             self.logger.error(f"Error processing tweet: {e}")
             return f"❌ Error processing request: {str(e)}"
@@ -2134,6 +2184,83 @@ Symbol must be 1-10 letters/numbers only."""
             
         except Exception as e:
             self.logger.error(f"Error sending format error reply: {e}")
+            return False
+
+    async def send_twitter_reply_specific_error(self, tweet_id: str, username: str, error_message: str) -> bool:
+        """Reply with specific error message (symbol too long, invalid chars, etc)"""
+        try:
+            # Check Twitter reply rate limit first
+            now = time.time()
+            self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            daily_replies = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
+            
+            if len(self.twitter_reply_history) >= self.twitter_reply_limit:
+                self.logger.warning(f"Twitter specific error reply rate limit: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
+                return False
+            
+            if len(daily_replies) >= self.twitter_daily_limit:
+                self.logger.warning(f"Twitter daily limit: {len(daily_replies)}/{self.twitter_daily_limit}")
+                return False
+            
+            # SAFETY: Check if this is from the bot itself
+            if username.lower() == self.bot_username.lower():
+                self.logger.warning(f"Skipping specific error reply to own tweet from @{username}")
+                return False
+            
+            # Check if we have all OAuth 1.0a credentials
+            api_key = os.getenv('TWITTER_API_KEY')
+            api_secret = os.getenv('TWITTER_API_SECRET')
+            access_token = os.getenv('TWITTER_ACCESS_TOKEN')
+            access_token_secret = os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
+            
+            if not all([api_key, api_secret, access_token, access_token_secret]):
+                self.logger.warning("Twitter OAuth credentials not complete - skipping specific error reply")
+                return False
+            
+            # Create helpful reply based on the specific error
+            reply_text = f"""@{username} {error_message}
+
+✅ Valid format: @DeployOnKlik $TICKER
+✅ Symbol rules: 1-10 characters, letters/numbers only
+
+Try again with a shorter symbol!"""
+            
+            # Use tweepy
+            import tweepy
+            
+            try:
+                client = tweepy.Client(
+                    consumer_key=api_key,
+                    consumer_secret=api_secret,
+                    access_token=access_token,
+                    access_token_secret=access_token_secret
+                )
+                
+                response = client.create_tweet(
+                    text=reply_text,
+                    in_reply_to_tweet_id=tweet_id
+                )
+                
+                if response.data:
+                    self.logger.info(f"✅ Specific error reply sent! Tweet ID: {response.data['id']}")
+                    self.twitter_reply_history.append(time.time())
+                    print(f"📱 Sent specific error reply to @{username}: {error_message}")
+                    return True
+                else:
+                    return False
+                    
+            except tweepy.TooManyRequests as e:
+                # This is Twitter's API rate limit, not our internal tracking
+                self.logger.error(f"Twitter API rate limit hit (specific error): {e}")
+                print(f"⚠️  Twitter API returned rate limit error!")
+                print(f"   Internal tracking: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
+                return False
+            except Exception as e:
+                self.logger.error(f"Tweepy error sending specific error reply: {e}")
+                return False
+            
+        except Exception as e:
+            self.logger.error(f"Error sending specific error reply: {e}")
             return False
 
 async def main(mode: str = "realtime"):
