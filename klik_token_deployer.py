@@ -85,18 +85,25 @@ class KlikTokenDeployer:
         # Twitter reply rate limiting
         self.twitter_reply_history = []  # Track Twitter replies
         
-        # Set rate limit based on Twitter API tier
-        self.twitter_tier = os.getenv('TWITTER_API_TIER', 'free').lower()
+        # Twitter API v2 rate limits
+        # 1667 requests / 24 hours PER APP = ~69/hour = ~17/15min
+        # We'll be conservative and use 15 per 15 minutes to stay safe
+        self.twitter_tier = os.getenv('TWITTER_API_TIER', 'v2').lower()
         tier_limits = {
-            'free': 40,      # Stay under 50/15min limit
-            'basic': 80,     # Stay under 100/15min limit  
-            'pro': 250,      # Stay under 300/15min limit
-            'enterprise': 1000  # Essentially unlimited
+            'v2': 15,         # Twitter v2 API: 1667/day = ~17/15min (conservative)
+            'free': 15,       # Same as v2
+            'basic': 50,      # If you have Basic tier ($100/month)
+            'pro': 150,       # If you have Pro tier  
+            'enterprise': 500 # Enterprise tier
         }
-        self.twitter_reply_limit = tier_limits.get(self.twitter_tier, 40)
+        self.twitter_reply_limit = tier_limits.get(self.twitter_tier, 15)
         self.twitter_reply_window = 900  # 15 minutes in seconds
         
-        print(f"🐦 Twitter API Tier: {self.twitter_tier.upper()} ({self.twitter_reply_limit} replies/15min)")
+        # Also track daily limit
+        self.twitter_daily_limit = 1600  # Stay under 1667/day limit
+        self.twitter_daily_window = 86400  # 24 hours in seconds
+        
+        print(f"🐦 Twitter API: {self.twitter_reply_limit} replies/15min, {self.twitter_daily_limit}/day")
         
         # Queue system for deployments
         self.deployment_queue = Queue(maxsize=10)  # Max 10 pending deployments
@@ -139,8 +146,8 @@ class KlikTokenDeployer:
             os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
         ]
         if all(twitter_keys):
-            print(f"✅ Twitter replies: ENABLED ({self.twitter_tier.upper()} tier)")
-            print(f"   → Rate limit: {self.twitter_reply_limit} replies per 15 minutes")
+            print(f"✅ Twitter replies: ENABLED")
+            print(f"   → Rate limit: {self.twitter_reply_limit}/15min, {self.twitter_daily_limit}/day")
         else:
             print("⚠️  Twitter replies: DISABLED")
         
@@ -1269,9 +1276,17 @@ Quick & easy deposits!"""
             # Remove replies older than 15 minutes
             self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
             
+            # Also check daily limit (24 hours)
+            daily_replies = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
+            
             if len(self.twitter_reply_history) >= self.twitter_reply_limit:
                 self.logger.warning(f"Twitter reply rate limit reached: {len(self.twitter_reply_history)}/{self.twitter_reply_limit} in 15 minutes")
                 print(f"⚠️  Skipping Twitter reply - rate limit ({self.twitter_reply_limit} replies/15min)")
+                return False
+            
+            if len(daily_replies) >= self.twitter_daily_limit:
+                self.logger.warning(f"Twitter daily limit reached: {len(daily_replies)}/{self.twitter_daily_limit} in 24 hours")
+                print(f"⚠️  Skipping Twitter reply - daily limit ({self.twitter_daily_limit} replies/day)")
                 return False
             
             # SAFETY: Check if this is from the bot itself
@@ -1694,7 +1709,6 @@ You sent: Missing $"""
         
         # Start monitoring
         monitor = TwitterMonitor(self)
-        self._monitor_instance = monitor  # Store for access in queue monitor
         await monitor.start_realtime_monitoring()
     
     async def queue_monitor(self):
@@ -1753,24 +1767,14 @@ You sent: Missing $"""
                         # Show Twitter reply rate
                         current_ts = time.time()
                         twitter_replies = len([t for t in self.twitter_reply_history if current_ts - t < self.twitter_reply_window])
+                        twitter_daily = len([t for t in self.twitter_reply_history if current_ts - t < self.twitter_daily_window])
                         twitter_percentage = (twitter_replies / self.twitter_reply_limit) * 100
-                        print(f"   • Twitter Replies: {twitter_replies}/{self.twitter_reply_limit} ({twitter_percentage:.0f}%) in 15min")
+                        twitter_daily_percentage = (twitter_daily / self.twitter_daily_limit) * 100
+                        print(f"   • Twitter Replies: {twitter_replies}/{self.twitter_reply_limit} ({twitter_percentage:.0f}%) in 15min, {twitter_daily}/{self.twitter_daily_limit} ({twitter_daily_percentage:.0f}%) today")
                         
                         print(f"   • Total Balance: {total_balance:.4f} ETH")
                         print(f"   • User Deposits: {user_deposits:.4f} ETH (protected)")
                         print(f"   • Available: {available_balance:.4f} ETH")
-                        
-                        # Show TwitterAPI.io usage if monitoring is active
-                        try:
-                            from twitter_monitor import TwitterMonitor
-                            # Access the monitor instance if available
-                            if hasattr(self, '_monitor_instance'):
-                                monitor = self._monitor_instance
-                                tapi_calls = len([t for t in monitor.twitterapi_calls if current_ts - t < monitor.twitterapi_window])
-                                tapi_percentage = (tapi_calls / monitor.twitterapi_limit) * 100
-                                print(f"   • TwitterAPI.io: {tapi_calls}/{monitor.twitterapi_limit} API calls ({tapi_percentage:.0f}%) in 24h")
-                        except:
-                            pass
                         
                         if twitter_replies >= self.twitter_reply_limit * 0.8:  # 80% of limit
                             print(f"   ⚠️  TWITTER REPLY LIMIT: Only {self.twitter_reply_limit - twitter_replies} replies remaining!")
@@ -1950,8 +1954,12 @@ You sent: Missing $"""
             # Check Twitter reply rate limit first
             now = time.time()
             self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            daily_replies = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
             
             if len(self.twitter_reply_history) >= self.twitter_reply_limit:
+                return False
+            
+            if len(daily_replies) >= self.twitter_daily_limit:
                 return False
                 
             if username.lower() == self.bot_username.lower():
@@ -2003,8 +2011,15 @@ Your token will deploy soon ⏳"""
             now = time.time()
             self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
             
+            # Check daily limit
+            daily_replies = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
+            
             if len(self.twitter_reply_history) >= self.twitter_reply_limit:
                 self.logger.warning(f"Twitter instruction reply rate limit: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
+                return False
+            
+            if len(daily_replies) >= self.twitter_daily_limit:
+                self.logger.warning(f"Twitter daily limit: {len(daily_replies)}/{self.twitter_daily_limit}")
                 return False
             
             # SAFETY: Check if this is from the bot itself
@@ -2117,9 +2132,14 @@ Info & deposits: t.me/DeployOnKlik"""
             # Check Twitter reply rate limit first
             now = time.time()
             self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            daily_replies = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
             
             if len(self.twitter_reply_history) >= self.twitter_reply_limit:
                 self.logger.warning(f"Twitter format error reply rate limit: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
+                return False
+            
+            if len(daily_replies) >= self.twitter_daily_limit:
+                self.logger.warning(f"Twitter daily limit: {len(daily_replies)}/{self.twitter_daily_limit}")
                 return False
             
             # SAFETY: Check if this is from the bot itself
