@@ -15,6 +15,7 @@ from web3 import Web3
 from eth_account import Account
 from dotenv import load_dotenv
 import requests
+import telegram
 
 # Load environment variables
 load_dotenv()
@@ -425,28 +426,18 @@ async def show_gas_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gas_price = w3.eth.gas_price
     gas_gwei = float(w3.from_wei(gas_price, 'gwei'))
     
-    # Calculate costs
-    deploy_gas_units = 8_000_000  # Realistic estimate
-    deploy_gas_cost = gas_gwei * deploy_gas_units / 1e9
-    
-    keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Calculate deployment costs at different gas levels
+    deploy_gas_units = 6.5e6  # 6.5M gas for deployment
     
     message = (
-        f"**Gas & Deployment Costs**\n"
+        f"**Current Gas Prices ⛽**\n"
         f"══════════════════════\n\n"
-        f"**Current Gas Price**\n"
-        f"══════════════════════\n"
-        f"⛽ **{gas_gwei:.1f} gwei**\n"
-        f"💰 Deploy cost: **~{deploy_gas_cost:.4f} ETH**\n"
-        f"➕ Platform fee: **0.01 ETH**\n"
-        f"═══════════════\n"
-        f"📊 Total: **~{deploy_gas_cost + 0.01:.4f} ETH**/deploy\n\n"
-        f"**Deployment Costs by Gas Level**\n"
-        f"══════════════════════\n"
+        f"**Live Network Gas:** {gas_gwei:.1f} gwei\n\n"
+        f"**Deployment Cost Estimates:**\n"
+        f"*(6.5M gas + 0.01 ETH fee)*\n\n"
+        f"**1 gwei:** ~{1 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**3 gwei:** ~{3 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**5 gwei:** ~{5 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
-        f"**6 gwei:** ~{6 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**10 gwei:** ~{10 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**15 gwei:** ~{15 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**20 gwei:** ~{20 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
@@ -456,11 +447,25 @@ async def show_gas_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"*Updates every 12 seconds*"
     )
     
-    await query.edit_message_text(
-        message,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
+    keyboard = [
+        [InlineKeyboardButton("🔄 Refresh Gas Prices", callback_data="gas_prices")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            message,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            # Gas prices haven't changed, just acknowledge the button press
+            await query.answer("Gas prices unchanged")
+        else:
+            # Re-raise other errors
+            raise
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show recent deployment history"""
