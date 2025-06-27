@@ -4,9 +4,24 @@
 
 Users tweet `@DeployOnKlik $TOKEN` → Bot deploys tokens on Ethereum in 1-3 seconds
 
-- **FREE** when gas ≤ 3 gwei (1/day limit, 1500+ followers)
-- **PAID** when gas > 3 gwei (deposit ETH first)
-- **$DOK HOLDERS** get 2 free deploys/day with NO FEES (5M+ DOK)
+- **FREE** when gas ≤ 2.5 gwei (strict limits, 1500+ followers)
+- **PAID** when gas > 2.5 gwei (deposit ETH first)
+- **$DOK HOLDERS** get 2 free deploys/day up to 15 gwei (5M+ DOK)
+
+## Progressive Cooldown System (NEW!)
+
+To prevent abuse and save gas costs, the bot now uses a VERY restrictive progressive cooldown:
+
+- **1st free deployment**: Always allowed ✅
+- **2nd deployment within 7 days**: 14-day cooldown applied ⏳
+- **3+ deployments within 7 days**: 30-day cooldown applied ⏳⏳
+
+This encourages users to either:
+- Become $DOK holders for more deploys
+- Use the pay-per-deploy system
+- Use their free deploys wisely
+
+**Note**: $DOK ticker is reserved and cannot be deployed.
 
 ## Quick Start - Run Both Bots Together
 

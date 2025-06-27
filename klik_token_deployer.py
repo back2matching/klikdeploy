@@ -525,8 +525,8 @@ class KlikTokenDeployer:
                 # Reset consecutive days
                 consecutive_days = 0
             
-            # Progressive cooldown logic
-            if free_deploys_7d >= 5:  # 5+ deploys in 7 days = heavy user
+            # Progressive cooldown logic - VERY RESTRICTIVE (3 levels only)
+            if free_deploys_7d >= 3:  # 3+ deploys in 7 days = heavy abuse
                 # Apply 30-day cooldown
                 cooldown_end = now + timedelta(days=30)
                 conn.execute('''
@@ -534,27 +534,17 @@ class KlikTokenDeployer:
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Heavy usage detected. 30-day cooldown applied", 30
+                return False, "Multiple free deployments detected. 30-day cooldown applied", 30
                 
-            elif free_deploys_7d >= 3:  # 3-4 deploys in 7 days = frequent user
-                # Apply 14-day cooldown
+            elif free_deploys_7d >= 2:  # 2 deploys in 7 days = already frequent
+                # Apply 14-day cooldown immediately
                 cooldown_end = now + timedelta(days=14)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Frequent usage detected. 14-day cooldown applied", 14
-                
-            elif free_deploys_7d >= 2 and consecutive_days >= 2:  # 2 deploys + consecutive days
-                # Apply 7-day cooldown
-                cooldown_end = now + timedelta(days=7)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Back-to-back deployments detected. 7-day cooldown applied", 7
+                return False, "Second free deployment within 7 days. 14-day cooldown applied", 14
             
             # Update last deployment time
             conn.execute('''
