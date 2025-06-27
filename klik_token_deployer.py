@@ -559,6 +559,42 @@ class KlikTokenDeployer:
             else:
                 return True, f"Deployment allowed (first free this week)", 0
     
+    def check_holder_weekly_deployments(self, username: str) -> int:
+        """Check how many holder deployments user has made this week
+        
+        Returns:
+            int: Number of holder deployments in the last 7 days
+        """
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+            # Count holder deployments in last 7 days from deployments table
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at > ? 
+                AND status = 'success'
+                AND tx_hash IN (
+                    SELECT tx_hash FROM deployments d
+                    INNER JOIN users u ON LOWER(d.username) = LOWER(u.twitter_username)
+                    WHERE u.is_holder = 1
+                )
+            ''', (username, seven_days_ago))
+            
+            holder_deploys_7d = cursor.fetchone()[0]
+            
+            # Also check from daily_limits for more accurate count
+            cursor = conn.execute('''
+                SELECT COALESCE(SUM(holder_deploys), 0) 
+                FROM daily_limits 
+                WHERE LOWER(username) = LOWER(?) AND date >= date(?)
+            ''', (username, seven_days_ago))
+            
+            daily_limits_count = cursor.fetchone()[0]
+            
+            # Return the maximum of both counts (in case of discrepancy)
+            return max(holder_deploys_7d, daily_limits_count)
+    
     async def generate_salt_and_address(self, token_name: str, token_symbol: str) -> Tuple[str, str]:
         """Generate salt using Klik Finance API and calculate predicted address"""
         try:
@@ -753,9 +789,9 @@ class KlikTokenDeployer:
         # CRITICAL: Check bot's available balance for free/holder deployments
         available_bot_balance_for_free = self.get_available_balance_for_free_deploys()
         
-        # Get today's deployment counts
+        # Get deployment counts
         with sqlite3.connect(self.db_path) as conn:
-            # Get or create daily limits
+            # Get or create daily limits (still needed for free deploys)
             cursor = conn.execute('''
                 SELECT free_deploys, holder_deploys 
                 FROM daily_limits 
@@ -764,13 +800,16 @@ class KlikTokenDeployer:
             
             daily_stats = cursor.fetchone()
             if daily_stats:
-                free_deploys_today, holder_deploys_today = daily_stats
+                free_deploys_today, _ = daily_stats  # Ignore daily holder count
             else:
-                free_deploys_today = holder_deploys_today = 0
+                free_deploys_today = 0
                 conn.execute('''
                     INSERT INTO daily_limits (username, date, free_deploys, holder_deploys)
                     VALUES (?, ?, 0, 0)
                 ''', (username.lower(), today))
+        
+        # Get holder weekly deployments
+        holder_deploys_this_week = self.check_holder_weekly_deployments(username) if is_holder else 0
         
         # Tier 1: Free deployment 
         # Standard users: gas <= 3 gwei AND 1500+ followers
@@ -798,7 +837,7 @@ New limit: ~1 free deploy per week
 
 Want to deploy NOW? 
 💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Or hold 5M+ $DOK for 2 free/day"""
+🎯 Or hold 5M+ $DOK for 2/week"""
                     else:
                         return False, f"""⏳ COOLDOWN: Back-to-back deployments detected!
 
@@ -807,7 +846,7 @@ New limit: ~1 free deploy per week
 
 Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Or hold 5M+ $DOK for 2 free/day"""
+🎯 Or hold 5M+ $DOK for 2/week"""
         
         if likely_gas_gwei <= gas_limit_for_user:
             # Check follower count for free deployments
@@ -835,8 +874,8 @@ t.me/DeployOnKlik"""
 Bot needs more ETH for free deploys.
 Deposit to deploy now: t.me/DeployOnKlik"""
             
-            if is_holder and holder_deploys_today < 2:  # Changed from 5 to 2
-                return True, f"✅ Holder deployment allowed (gas: {likely_gas_gwei:.1f} gwei, {holder_deploys_today}/2 used today)"
+            if is_holder and holder_deploys_this_week < 2:  # 2 per week instead of per day
+                return True, f"✅ Holder deployment allowed (gas: {likely_gas_gwei:.1f} gwei, {holder_deploys_this_week}/2 used this week)"
             elif free_deploys_today < 1:
                 if is_vip and likely_gas_gwei > free_gas_limit:
                     return True, f"✅ Free deployment allowed (gas: {likely_gas_gwei:.1f} gwei, 20k+ followers benefit)"
@@ -850,7 +889,7 @@ New limit: ~1 free deploy per week
 
 Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Or hold 5M+ $DOK for 2 free/day"""
+🎯 Or hold 5M+ $DOK for 2/week"""
         
         # Tier 2: Holder deployment (gas <= 15 gwei)
         if is_holder:
@@ -873,10 +912,10 @@ Bot needs more ETH for free deploys.
 Your balance: {user_balance:.4f} ETH
 Deposit more: t.me/DeployOnKlik"""
             
-            if holder_deploys_today < 2:  # Changed from 5 to 2
-                return True, f"🎯 Holder deployment allowed ({holder_deploys_today}/2 used today, gas: {likely_gas_gwei:.1f} gwei)"
+            if holder_deploys_this_week < 2:  # 2 per week instead of per day
+                return True, f"🎯 Holder deployment allowed ({holder_deploys_this_week}/2 used this week, gas: {likely_gas_gwei:.1f} gwei)"
             else:
-                return False, f"🎯 Holder daily limit reached (2/2 used). Thank you for supporting $KLIK!"
+                return False, f"🎯 Holder weekly limit reached (2/2 used). Thank you for supporting $KLIK!"
         
         # Tier 3: Pay per deploy (check balance)
         if user_balance >= total_cost:
@@ -2413,7 +2452,7 @@ Wait {days} days OR:
 
 Skip cooldown:
 💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Hold 5M+ $DOK for 2/day"""
+🎯 Hold 5M+ $DOK for 2/week"""
             elif "Gas too high" in instructions:
                 gas_match = re.search(r'\((\d+\.?\d*) gwei\)', instructions)
                 gas_value = gas_match.group(1) if gas_match else "high"
@@ -2434,9 +2473,9 @@ Or deposit ETH: t.me/DeployOnKlik"""
 
 Want more?
 💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Hold 5M+ $DOK for 2/day"""
-            elif "Holder daily limit reached" in instructions:
-                reply_text = f"""@{username} Holder limit reached (2/2 today)
+🎯 Hold 5M+ $DOK for 2/week"""
+            elif "Holder weekly limit reached" in instructions:
+                reply_text = f"""@{username} Holder limit reached (2/2 this week)
 
 Thank you for supporting $KLIK! 🎯"""
             elif "balance" in instructions.lower():

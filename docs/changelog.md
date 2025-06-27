@@ -4,39 +4,50 @@ All notable changes to the Klik Token Deployer bot system will be documented in 
 
 ## 📱 Twitter Update Templates
 
-### Latest Update (v2.1.1)
+### Latest Update (v2.1.2)
 ```
-🚨 UPDATE: Free deployment limits are now MORE RESTRICTIVE
+🚨 UPDATE: ALL deployment limits adjusted for sustainability
 
-Old: 1 free/day (easily abused)
-New: ~1 free/week max
+FREE users: ~1 deploy/week
+HOLDER benefits: 2 deploys/WEEK (was 2/day)
 
-• 1st deploy in 7 days: ✅ Allowed
-• 2nd deploy: ❌ 30-day cooldown
-• Back-to-back: ❌ 14-day cooldown
+Why? To ensure long-term sustainability while keeping value for holders.
 
-Want more? 
-→ Hold 5M+ $DOK for 2 free/day
-→ Or deposit ETH
-
-Sustainability > Spam 🛡️
+Hold 5M+ $DOK → Still get 2 FREE/week up to 15 gwei
+CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
 ```
 
 ### For $DOK Holders
 ```
-🎯 $DOK HOLDERS: Your benefits just got MORE VALUABLE
+🎯 $DOK HOLDERS: Benefits adjusted for sustainability
 
-While free users now get ~1 deploy/week, you still get:
-• 2 FREE deploys/day
+Your benefits:
+• 2 FREE deploys/week (was 2/day)
 • Up to 15 gwei gas
 • NO platform fees
 
-CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
+Still more than free users who get ~1/week!
 
-The gap between free & holder benefits just widened 📈
+CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
 ```
 
 ---
+
+## [2.1.2] - 2024-12-27
+
+### 🔄 Holder Benefits Adjustment
+
+#### Changed Holder Limits
+- **Old**: 2 free deployments per day
+- **New**: 2 free deployments per week
+- **Reason**: Further reduce gas costs while maintaining holder value
+- **Impact**: Holders still get 2x more than free users (~1/week)
+
+### 🎯 Updated Deployment Tiers
+- **Free**: ~1/week below 3 gwei (1500+ followers)
+- **Free VIP**: ~1/week below 6 gwei (20k+ followers)
+- **Holders**: 2/week up to 15 gwei (5M+ $DOK)
+- **Pay-Per-Deploy**: Unlimited (gas + 0.01 ETH)
 
 ## [2.1.1] - 2024-12-27
 
@@ -101,7 +112,7 @@ The gap between free & holder benefits just widened 📈
 
 #### Key Features
 - **Free Tier**: 1 free deploy/day when gas ≤ 3 gwei (1500+ followers)
-- **Holder Benefits**: 2 free deploys/day up to 15 gwei gas for $DOK holders
+- **Holder Benefits**: 2 free deploys/week up to 15 gwei gas for $DOK holders
 - **Pay-Per-Deploy**: Deposit ETH for unlimited deployments
 - **Automated System**: No admin intervention needed
 
