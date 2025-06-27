@@ -161,6 +161,9 @@ class KlikTokenDeployer:
             print("📴 Telegram notifications: DISABLED (Twitter only)")
             
         print("=" * 50)
+        
+        # Show Twitter rate limit status on startup
+        self.debug_twitter_rate_limits()
     
     def _setup_logging(self):
         """Setup logging"""
@@ -1372,8 +1375,13 @@ You sent: Missing $"""
                     self.logger.error(f"Failed to send reply: No response data")
                     return False
                     
-            except tweepy.TooManyRequests:
-                self.logger.error("Rate limit reached for Twitter replies")
+            except tweepy.TooManyRequests as e:
+                # This is Twitter's API rate limit, not our internal tracking
+                self.logger.error(f"Twitter API rate limit hit: {e}")
+                print(f"⚠️  Twitter API returned rate limit error!")
+                print(f"   This is Twitter's limit, not the bot's internal tracking")
+                print(f"   Bot thought it had sent: {len(self.twitter_reply_history)} replies in 15 min")
+                # Don't add to history since the tweet wasn't actually sent
                 return False
             except Exception as e:
                 self.logger.error(f"Tweepy error: {e}")
@@ -1701,6 +1709,62 @@ You sent: Missing $"""
             'queue_size': self.deployment_queue.qsize(),
             'active_deployments': len(self.active_deployments)
         }
+    
+    def debug_twitter_rate_limits(self):
+        """Debug Twitter rate limit tracking"""
+        now = time.time()
+        
+        # Clean up old entries
+        self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
+        
+        # Count replies in different windows
+        replies_15min = len([t for t in self.twitter_reply_history if now - t < self.twitter_reply_window])
+        replies_24h = len([t for t in self.twitter_reply_history if now - t < self.twitter_daily_window])
+        
+        print("\n🐦 TWITTER RATE LIMIT DEBUG:")
+        print(f"   Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"   15-min window: {replies_15min}/{self.twitter_reply_limit} replies")
+        print(f"   24-hour window: {replies_24h}/{self.twitter_daily_limit} replies")
+        print(f"   Total tracked: {len(self.twitter_reply_history)} timestamps")
+        
+        if self.twitter_reply_history:
+            # Show recent entries
+            print("\n   Recent reply timestamps:")
+            for i, ts in enumerate(self.twitter_reply_history[-10:], 1):
+                age_seconds = int(now - ts)
+                age_mins = age_seconds // 60
+                timestamp = datetime.fromtimestamp(ts).strftime('%H:%M:%S')
+                print(f"   {i}. {timestamp} ({age_mins}m {age_seconds % 60}s ago)")
+        
+        # Check if we would be rate limited
+        would_be_limited = replies_15min >= self.twitter_reply_limit or replies_24h >= self.twitter_daily_limit
+        print(f"\n   Would be rate limited: {'YES ⚠️' if would_be_limited else 'NO ✅'}")
+        
+        if would_be_limited:
+            if replies_15min >= self.twitter_reply_limit:
+                # Calculate when 15-min window will reset
+                oldest_15min = min([t for t in self.twitter_reply_history if now - t < self.twitter_reply_window])
+                reset_in = int(self.twitter_reply_window - (now - oldest_15min))
+                print(f"   15-min limit resets in: {reset_in // 60}m {reset_in % 60}s")
+            
+            if replies_24h >= self.twitter_daily_limit:
+                # Calculate when daily limit will reset
+                oldest_24h = min(self.twitter_reply_history)
+                reset_in = int(self.twitter_daily_window - (now - oldest_24h))
+                print(f"   Daily limit resets in: {reset_in // 3600}h {(reset_in % 3600) // 60}m")
+        
+        return {
+            'replies_15min': replies_15min,
+            'replies_24h': replies_24h,
+            'is_limited': would_be_limited
+        }
+    
+    def clear_twitter_rate_limits(self):
+        """Clear Twitter rate limit history - use for troubleshooting"""
+        old_count = len(self.twitter_reply_history)
+        self.twitter_reply_history = []
+        print(f"🧹 Cleared {old_count} Twitter reply timestamps from rate limit tracking")
+        return old_count
 
     async def start_realtime_monitoring(self):
         """Start real-time monitoring using TwitterMonitor"""
@@ -2127,8 +2191,11 @@ Info & deposits: t.me/DeployOnKlik"""
                 else:
                     return False
                     
-            except tweepy.TooManyRequests:
-                self.logger.error("Rate limit reached for Twitter replies")
+            except tweepy.TooManyRequests as e:
+                # This is Twitter's API rate limit, not our internal tracking
+                self.logger.error(f"Twitter API rate limit hit (instructions): {e}")
+                print(f"⚠️  Twitter API returned rate limit error!")
+                print(f"   Internal tracking: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
                 return False
             
         except Exception as e:
@@ -2222,8 +2289,11 @@ Symbol must be 1-10 letters/numbers only."""
                 else:
                     return False
                     
-            except tweepy.TooManyRequests:
-                self.logger.error("Rate limit reached for Twitter replies")
+            except tweepy.TooManyRequests as e:
+                # This is Twitter's API rate limit, not our internal tracking
+                self.logger.error(f"Twitter API rate limit hit (format error): {e}")
+                print(f"⚠️  Twitter API returned rate limit error!")
+                print(f"   Internal tracking: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
                 return False
             except Exception as e:
                 self.logger.error(f"Tweepy error sending format reply: {e}")
