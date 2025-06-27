@@ -1412,13 +1412,29 @@ You sent: Missing $"""
             # Parse the tweet
             token_info = self.parse_tweet_for_token(tweet_text)
             if not token_info:
-                # Send helpful Twitter reply about the format error
-                error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
+                # Check if this looks like a deployment attempt before replying
+                # Look for common deployment-related keywords
+                cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip().lower()
                 
-                # Send Twitter reply to help the user
-                await self.send_twitter_reply_format_error(tweet_id, username, tweet_text)
+                # Keywords that indicate someone is trying to deploy
+                deployment_keywords = ['deploy', 'launch', 'create', 'make', 'ticker:', 'symbol:', 'token:']
+                looks_like_deployment = any(keyword in cleaned_text for keyword in deployment_keywords)
                 
-                return error_msg
+                # Also check if they used $ anywhere (even if incorrectly placed)
+                has_dollar_sign = '$' in tweet_text
+                
+                # Only send format help if it looks like they're trying to deploy
+                if looks_like_deployment or has_dollar_sign:
+                    error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
+                    
+                    # Send Twitter reply to help the user
+                    await self.send_twitter_reply_format_error(tweet_id, username, tweet_text)
+                    
+                    return error_msg
+                else:
+                    # This is just a conversation mention, ignore it
+                    self.logger.info(f"Ignoring conversation mention from @{username}: {tweet_text[:100]}")
+                    return "✅ Ignored - not a deployment request"
             
             # Get image - prioritize deployment tweet's own image over parent tweet
             image_url = None
@@ -1998,10 +2014,20 @@ Info & deposits: t.me/DeployOnKlik"""
             
             # Analyze what went wrong
             cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip()
+            cleaned_lower = cleaned_text.lower()
             
             # Create helpful reply based on what they did wrong
             if '$' not in tweet_text:
-                reply_text = f"""@{username} Missing $ symbol!
+                # Check if they mentioned ticker/symbol in some way
+                if any(word in cleaned_lower for word in ['ticker:', 'symbol:', 'token:']):
+                    reply_text = f"""@{username} You need a $ before the ticker!
+
+✅ Correct: @DeployOnKlik $GM
+✅ Also OK: @DeployOnKlik $GM - Good Morning Token
+
+You tried: "{cleaned_text[:40]}{"..." if len(cleaned_text) > 40 else ""}" """
+                else:
+                    reply_text = f"""@{username} Missing $ symbol!
 
 ✅ Correct: @DeployOnKlik $TICKER
 ✅ Also OK: @DeployOnKlik $TICKER - Name
