@@ -4,24 +4,9 @@
 
 Users tweet `@DeployOnKlik $TOKEN` → Bot deploys tokens on Ethereum in 1-3 seconds
 
-- **FREE** when gas ≤ 2.5 gwei (strict limits, 1500+ followers)
-- **PAID** when gas > 2.5 gwei (deposit ETH first)
-- **$DOK HOLDERS** get 2 free deploys/day up to 15 gwei (5M+ DOK)
-
-## Progressive Cooldown System (NEW!)
-
-To prevent abuse and save gas costs, the bot now uses a VERY restrictive progressive cooldown:
-
-- **1st free deployment**: Always allowed ✅
-- **2nd deployment within 7 days**: 14-day cooldown applied ⏳
-- **3+ deployments within 7 days**: 30-day cooldown applied ⏳⏳
-
-This encourages users to either:
-- Become $DOK holders for more deploys
-- Use the pay-per-deploy system
-- Use their free deploys wisely
-
-**Note**: $DOK ticker is reserved and cannot be deployed.
+- **FREE** when gas ≤ 3 gwei (~1/week limit, 1500+ followers)
+- **PAID** when gas > 3 gwei (deposit ETH first)
+- **$DOK HOLDERS** get 2 free deploys/day with NO FEES (5M+ DOK)
 
 ## Quick Start - Run Both Bots Together
 
@@ -43,6 +28,20 @@ python telegram_deposit_bot.py
 ```
 
 ## How The System Works
+
+### Free Deployment Limits (NEW - More Restrictive!)
+
+To prevent abuse and reduce gas waste, free deployments are now LIMITED:
+
+- **1st free deploy in 7 days**: ✅ Allowed
+- **2nd free deploy within 7 days**: ❌ 30-day cooldown applied
+- **Back-to-back deploys**: ❌ 14-day cooldown applied
+
+**Effectively: You get ~1 free deployment per week**
+
+Want more deployments? Either:
+1. **Become a $DOK holder** (5M+ tokens) → 2 free/day up to 15 gwei
+2. **Use pay-per-deploy** → Deposit ETH for unlimited deployments
 
 ### For New Users
 
@@ -201,6 +200,8 @@ python run_both.py
 - **Self-Protection**: Bot can deploy and reply to its first token only (for testing), then ignores all subsequent own tweets
 - **Follower Requirement**: 1,500+ followers required for ALL deployments (spam protection)
 - **Gas Buffer**: Withdrawals add +4 gwei to current gas for fast confirmation
+- **Progressive Cooldowns**: Free users limited to ~1 deploy/week (2nd deploy = 30-day cooldown)
+- **DOK Protection**: $DOK ticker is reserved and cannot be deployed
 - **Deposit Security**: 
   - Only checks last 30 minutes of transactions
   - Requires 3+ block confirmations

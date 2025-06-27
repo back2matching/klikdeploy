@@ -2,6 +2,55 @@
 
 All notable changes to the Klik Token Deployer bot system will be documented in this file.
 
+## 📱 Twitter Update Templates
+
+### Latest Update (v2.1.1)
+```
+🚨 UPDATE: Free deployment limits are now MORE RESTRICTIVE
+
+Old: 1 free/day (easily abused)
+New: ~1 free/week max
+
+• 1st deploy in 7 days: ✅ Allowed
+• 2nd deploy: ❌ 30-day cooldown
+• Back-to-back: ❌ 14-day cooldown
+
+Want more? 
+→ Hold 5M+ $DOK for 2 free/day
+→ Or deposit ETH
+
+Sustainability > Spam 🛡️
+```
+
+### For $DOK Holders
+```
+🎯 $DOK HOLDERS: Your benefits just got MORE VALUABLE
+
+While free users now get ~1 deploy/week, you still get:
+• 2 FREE deploys/day
+• Up to 15 gwei gas
+• NO platform fees
+
+CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
+
+The gap between free & holder benefits just widened 📈
+```
+
+---
+
+## [2.1.1] - 2024-12-27
+
+### 🔒 More Restrictive Cooldown System
+
+#### Updated Progressive Cooldowns (3 Levels)
+- **Much stricter** to encourage holder/paid deployments:
+  - 1st free deployment in 7 days: Allowed ✅
+  - 2nd free deployment within 7 days → 30-day cooldown ⏳
+  - Back-to-back deployments (consecutive days) → 14-day cooldown ⏳
+- **Effectively**: Users get ~1 free deploy per week maximum
+- **Goal**: Push users to become $DOK holders or use pay-per-deploy
+- **Savings**: Dramatically reduces gas waste from free tier abuse
+
 ## [2.1.0] - 2024-12-27
 
 ### 🛡️ Security & Anti-Abuse Features
@@ -11,22 +60,18 @@ All notable changes to the Klik Token Deployer bot system will be documented in 
 - **Behavior**: Attempts to deploy $DOK are silently ignored (no Twitter reply waste)
 - **Reason**: Prevents spam/confusion with the bot's own token
 
-#### Progressive Cooldown System - ULTRA RESTRICTIVE
+#### Progressive Cooldown System
 - **Replaced**: Old wasteful "1 free per day" system that reset daily
-- **New System**: Very restrictive 3-level progressive cooldowns:
+- **New System**: Smart progressive cooldowns based on usage patterns:
   - 1st deployment: Always allowed ✅
-  - 2nd deployment within 7 days → 14-day cooldown (immediate penalty!)
-  - 3+ deployments within 7 days → 30-day cooldown
+  - 2 deployments on consecutive days → 7-day cooldown
+  - 3-4 deployments within 7 days → 14-day cooldown
+  - 5+ deployments within 7 days → 30-day cooldown
 - **Benefits**: 
-  - Dramatically reduces gas waste (saves 80%+ on free deploys)
-  - Forces users to become $DOK holders or pay
-  - No more daily reset exploitation
-  - Much more sustainable long-term
-
-### 💸 Cost Reduction Measures
-- **Reduced**: Free deployment gas limit from 3.0 → 2.5 gwei
-- **Reduced**: Max deployments per hour from 15 → 10
-- **Impact**: Estimated 70-80% reduction in monthly gas costs
+  - Dramatically reduces gas waste
+  - Prevents daily reset exploitation
+  - Fair access for genuine users
+  - Progressive penalties for abusers
 
 ### 📊 Database Updates
 - **Added**: `deployment_cooldowns` table to track:

@@ -525,9 +525,9 @@ class KlikTokenDeployer:
                 # Reset consecutive days
                 consecutive_days = 0
             
-            # Progressive cooldown logic - VERY RESTRICTIVE (3 levels only)
-            if free_deploys_7d >= 3:  # 3+ deploys in 7 days = heavy abuse
-                # Apply 30-day cooldown
+            # Progressive cooldown logic - MUCH MORE RESTRICTIVE
+            if free_deploys_7d >= 2:  # 2+ deploys in 7 days = immediate long cooldown
+                # Apply 30-day cooldown for heavy usage
                 cooldown_end = now + timedelta(days=30)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
@@ -536,15 +536,15 @@ class KlikTokenDeployer:
                 ''', (cooldown_end, consecutive_days, now, username))
                 return False, "Multiple free deployments detected. 30-day cooldown applied", 30
                 
-            elif free_deploys_7d >= 2:  # 2 deploys in 7 days = already frequent
-                # Apply 14-day cooldown immediately
+            elif free_deploys_7d >= 1 and consecutive_days >= 2:  # Deployed yesterday AND today
+                # Apply 14-day cooldown for back-to-back usage
                 cooldown_end = now + timedelta(days=14)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Second free deployment within 7 days. 14-day cooldown applied", 14
+                return False, "Back-to-back deployments detected. 14-day cooldown applied", 14
             
             # Update last deployment time
             conn.execute('''
@@ -553,7 +553,11 @@ class KlikTokenDeployer:
                 WHERE LOWER(username) = LOWER(?)
             ''', (consecutive_days, now, username))
             
-            return True, f"Deployment allowed ({free_deploys_7d} in last 7 days)", 0
+            # More informative message about limits
+            if free_deploys_7d == 1:
+                return True, f"Deployment allowed (1 free used this week - next free deploy triggers 30-day cooldown)", 0
+            else:
+                return True, f"Deployment allowed (first free this week)", 0
     
     async def generate_salt_and_address(self, token_name: str, token_symbol: str) -> Tuple[str, str]:
         """Generate salt using Klik Finance API and calculate predicted address"""
