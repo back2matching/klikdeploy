@@ -227,7 +227,7 @@ class KlikTokenDeployer:
         # Optional configs
         self.bot_username = os.getenv('BOT_USERNAME', 'DeployOnKlik')
         self.max_gas_price_gwei = int(os.getenv('MAX_GAS_PRICE_GWEI', '50'))
-        self.gas_limit = int(os.getenv('GAS_LIMIT', '6000000'))
+        self.gas_limit = int(os.getenv('GAS_LIMIT', '8500000'))  # Increased for safety
         self.max_deploys_per_hour = int(os.getenv('MAX_DEPLOYS_PER_HOUR', '10'))
         self.max_deploys_per_user_per_day = int(os.getenv('MAX_DEPLOYS_PER_USER_PER_DAY', '3'))
         self.cooldown_minutes = int(os.getenv('COOLDOWN_MINUTES', '5'))
@@ -593,8 +593,8 @@ class KlikTokenDeployer:
             return False, f"⏳ System limit reached ({self.max_deploys_per_hour} deploys/hour). Try again later."
         
         # Estimate deployment cost using realistic gas usage
-        # Use 6.5M units as typical for Klik factory deployments
-        realistic_gas_units = 6_500_000
+        # Use 8.5M units matching our safer gas limits
+        realistic_gas_units = 8_500_000
         # Use current gas price (same as preview) for consistency
         realistic_gas_cost = float(self.w3.from_wei(current_gas_price * realistic_gas_units, 'ether'))
         
@@ -870,7 +870,7 @@ Quick & easy deposits!"""
             
             # Use current gas price for balance check (same as preview)
             current_gas_price = self.w3.eth.gas_price
-            realistic_gas_units = 6_500_000
+            realistic_gas_units = 8_500_000  # Match our safer gas limit
             
             # Calculate expected cost (same as preview)
             expected_gas_cost = float(self.w3.from_wei(current_gas_price * realistic_gas_units, 'ether'))
@@ -879,8 +879,25 @@ Quick & easy deposits!"""
             # For EIP-1559, also calculate max possible (for safety)
             latest_block = self.w3.eth.get_block('latest')
             base_fee = latest_block['baseFeePerGas']
-            max_priority_fee = self.w3.to_wei(1, 'gwei')
-            max_fee_per_gas = int(base_fee * 1.2) + max_priority_fee
+            
+            # Dynamic priority fee based on network conditions
+            # Use lower priority fee when base fee is low to save costs
+            if base_fee < self.w3.to_wei(1, 'gwei'):
+                # Very low gas - use minimal priority fee
+                max_priority_fee = self.w3.to_wei(0.1, 'gwei')
+            elif base_fee < self.w3.to_wei(5, 'gwei'):
+                # Low gas - use 0.25 gwei priority
+                max_priority_fee = self.w3.to_wei(0.25, 'gwei')
+            elif base_fee < self.w3.to_wei(20, 'gwei'):
+                # Normal gas - use 0.5 gwei priority
+                max_priority_fee = self.w3.to_wei(0.5, 'gwei')
+            else:
+                # High gas - use 1 gwei priority
+                max_priority_fee = self.w3.to_wei(1, 'gwei')
+            
+            # Max fee = (1.1 * base fee) + priority fee
+            # Reduced from 1.2x to 1.1x to save costs while still being safe
+            max_fee_per_gas = int(base_fee * 1.1) + max_priority_fee
             
             # Calculate worst case for logging
             worst_case_fee = float(self.w3.from_wei(max_fee_per_gas * realistic_gas_units, 'ether'))
@@ -943,9 +960,9 @@ Quick & easy deposits!"""
             # Priority fee (tip) - 1 gwei minimal for mainnet
             max_priority_fee = self.w3.to_wei(1, 'gwei')
             
-            # Max fee = (1.2 * base fee) + priority fee
-            # This allows for base fee to increase by 20% before tx gets stuck
-            max_fee_per_gas = int(base_fee * 1.2) + max_priority_fee
+            # Max fee = (1.1 * base fee) + priority fee
+            # Reduced from 1.2x to 1.1x to save costs while still being safe
+            max_fee_per_gas = int(base_fee * 1.1) + max_priority_fee
             
             # Use pre-generated salt if available (from manual deployment preview)
             if request.salt:
@@ -967,29 +984,38 @@ Quick & easy deposits!"""
                 salt
             )
             
-            # Estimate gas
+            # Estimate gas and use safe limits
+            # Use generous limits like successful deployers (they use 9M)
+            SAFE_GAS_LIMIT = 8_500_000  # Conservative safe limit
+            
             try:
                 gas_estimate = function_call.estimate_gas({
                     'from': self.deployer_address,
                     'value': 0
                 })
                 
-                # Add minimal buffer based on gas estimate size
-                if gas_estimate > 4_000_000:
-                    # For high gas estimates, use minimal buffer (5%)
-                    gas_limit = int(gas_estimate * 1.05)
-                    buffer_pct = 5
+                # Always use generous buffers to avoid failures
+                if gas_estimate < 5_000_000:
+                    # For low estimates, use 50% buffer
+                    gas_limit = int(gas_estimate * 1.5)
                 else:
-                    # For normal estimates, use 10% buffer
-                    gas_limit = int(gas_estimate * 1.10)
-                    buffer_pct = 10
+                    # For normal/high estimates, use safe fixed limit
+                    # This matches what successful deployers do
+                    gas_limit = SAFE_GAS_LIMIT
                 
-                # Warn if gas usage is very high
+                # Calculate buffer percentage for logging
+                buffer_pct = int(((gas_limit - gas_estimate) / gas_estimate) * 100)
+                
+                print(f"⛽ Gas estimate: {gas_estimate:,} units")
+                print(f"   Using limit: {gas_limit:,} units ({buffer_pct}% buffer)")
+                
+                # Warn if estimate is unusually high
+                if gas_estimate > 7_000_000:
+                    print(f"⚠️  WARNING: Unusually high gas estimate!")
+                    print(f"   Consider checking token parameters")
+                
+                # Balance check for high gas deployments
                 if gas_estimate > 6_000_000:
-                    print(f"⚠️  WARNING: High gas requirement detected: {gas_estimate:,} units")
-                    print(f"   Using {gas_limit:,} units with {buffer_pct}% safety buffer")
-                    
-                    # Double check our balance can cover this
                     worst_case_cost = float(self.w3.from_wei(max_fee_per_gas * gas_limit, 'ether'))
                     expected_cost = float(self.w3.from_wei(current_gas_price * gas_limit, 'ether'))
                     
@@ -1000,16 +1026,12 @@ Quick & easy deposits!"""
                     else:
                         if total_balance < expected_cost * 1.05:
                             raise Exception(f"Insufficient balance for high gas deployment: need {expected_cost * 1.05:.4f} ETH with buffer (expected {expected_cost:.4f} ETH)")
-                
-                # If estimate is way higher than our configured limit, log it
-                if gas_estimate > self.gas_limit:
-                    self.logger.warning(f"Gas estimate {gas_estimate} exceeds configured limit {self.gas_limit}")
                     
             except Exception as e:
-                # If estimation fails, try a higher default
+                # If estimation fails, use safe default (like other deployers)
                 self.logger.warning(f"Gas estimation failed: {e}")
-                print(f"⚠️  Gas estimation failed, using high default of {self.gas_limit:,} units")
-                gas_limit = self.gas_limit
+                print(f"⚠️  Gas estimation failed, using safe default of {SAFE_GAS_LIMIT:,} units")
+                gas_limit = SAFE_GAS_LIMIT
                 
                 # For safety, simulate the transaction first
                 try:
@@ -1045,7 +1067,7 @@ Quick & easy deposits!"""
                 self.last_nonce_time = current_time
             
             print(f"⛽ EIP-1559 Gas: Base fee: {base_fee / 1e9:.2f} gwei, Priority: {max_priority_fee / 1e9:.2f} gwei")
-            print(f"   Max fee: {max_fee_per_gas / 1e9:.2f} gwei (allows for 1.2x base fee increase)")
+            print(f"   Max fee: {max_fee_per_gas / 1e9:.2f} gwei (allows for 1.1x base fee increase)")
             print(f"🔢 Nonce: {nonce}")
             
             # Build transaction with EIP-1559 parameters
@@ -1633,7 +1655,7 @@ You sent: Missing $"""
             current_gas_price = self.w3.eth.gas_price
             current_gas_gwei = float(self.w3.from_wei(current_gas_price, 'gwei'))
             # Use realistic gas estimate for preview
-            estimated_gas_units = 6_500_000  # Typical for Klik factory deployments
+            estimated_gas_units = 8_500_000  # Using safe limit like other deployers
             estimated_cost = float(self.w3.from_wei(current_gas_price * estimated_gas_units, 'ether'))
             
             print(f"⛽ Gas Price: {current_gas_gwei:.1f} gwei")
