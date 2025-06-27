@@ -29,8 +29,7 @@ from dotenv import load_dotenv
 import aiohttp
 import requests
 
-# Database for tracking
-import sqlite3
+# Database for tracking - moved to database service
 
 # For address calculation
 from eth_hash.auto import keccak
@@ -39,16 +38,13 @@ from eth_utils import to_checksum_address
 # Twitter monitoring
 from twitter_monitor import TwitterMonitor
 
-# Configure SQLite to handle datetime properly for Python 3.12+
-sqlite3.register_adapter(datetime, lambda dt: dt.isoformat())
-sqlite3.register_converter("timestamp", lambda b: datetime.fromisoformat(b.decode()))
-
 # For image handling
 import base64
 
-# Import data models
+# Import data models and services
 from deployer.models import DeploymentRequest
 from deployer.services import IPFSService
+from deployer.database import DeploymentDatabase
 
 class KlikTokenDeployer:
     """Twitter-triggered token deployer for Klik Finance"""
@@ -59,7 +55,7 @@ class KlikTokenDeployer:
         self._setup_logging()
         self._load_config()
         self._setup_web3()
-        self._setup_database()
+        self.db_path = 'deployments.db'
         
         # Rate limiting
         self.deployment_history = []
@@ -98,6 +94,7 @@ class KlikTokenDeployer:
         
         # Initialize services
         self.ipfs_service = IPFSService()
+        self.db = DeploymentDatabase(self.db_path)
         
         print("🚀 KLIK FINANCE TWITTER DEPLOYER v2.0")
         print("=" * 50)
@@ -114,16 +111,8 @@ class KlikTokenDeployer:
         available_for_free = self.get_available_balance_for_free_deploys()
         
         # Get earned balances
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_claim'"
-            )
-            earned_fees = float(cursor.fetchone()[0])
-            
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
-            )
-            platform_fees = float(cursor.fetchone()[0])
+        earned_fees = self.db.get_balance_by_source('fee_claim')
+        platform_fees = self.db.get_balance_by_source('pay_per_deploy')
         
         print(f"💰 Total Balance: {total_balance:.4f} ETH")
         print(f"   • User deposits: {user_deposits:.4f} ETH (protected)")
@@ -267,114 +256,7 @@ class KlikTokenDeployer:
         print(f"✅ Connected to Ethereum (Chain ID: {self.w3.eth.chain_id})")
         print(f"🏭 Using Klik Factory: {self.factory_address}")
     
-    def _setup_database(self):
-        """Setup SQLite database for tracking deployments"""
-        self.db_path = 'deployments.db'
-        
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            # Original deployments table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS deployments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    tweet_id TEXT UNIQUE,
-                    username TEXT,
-                    token_name TEXT,
-                    token_symbol TEXT,
-                    requested_at TIMESTAMP,
-                    deployed_at TIMESTAMP,
-                    tx_hash TEXT,
-                    token_address TEXT,
-                    status TEXT DEFAULT 'pending',
-                    tweet_url TEXT,
-                    parent_tweet_id TEXT,
-                    image_url TEXT,
-                    image_ipfs TEXT,
-                    salt TEXT,
-                    predicted_address TEXT
-                )
-            ''')
-            
-            # New user accounts table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    twitter_username TEXT UNIQUE,
-                    eth_address TEXT,
-                    balance REAL DEFAULT 0,
-                    is_holder BOOLEAN DEFAULT FALSE,
-                    holder_balance REAL DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Deposits tracking
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS deposits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    twitter_username TEXT,
-                    amount REAL,
-                    tx_hash TEXT UNIQUE,
-                    from_address TEXT,
-                    confirmed BOOLEAN DEFAULT FALSE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Daily limits tracking
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS daily_limits (
-                    username TEXT,
-                    date DATE,
-                    free_deploys INTEGER DEFAULT 0,
-                    holder_deploys INTEGER DEFAULT 0,
-                    PRIMARY KEY (username, date)
-                )
-            ''')
-            
-            # Add balance_sources table for tracking different balance types
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS balance_sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_type TEXT, -- 'deposit', 'fee_claim', 'pay_per_deploy'
-                    amount REAL,
-                    tx_hash TEXT,
-                    description TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            # Progressive cooldown tracking table
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS deployment_cooldowns (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE,
-                    free_deploys_7d INTEGER DEFAULT 0,
-                    last_free_deploy TIMESTAMP,
-                    cooldown_until TIMESTAMP,
-                    consecutive_days INTEGER DEFAULT 0,
-                    total_free_deploys INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE INDEX IF NOT EXISTS idx_username_date 
-                ON deployments(username, requested_at)
-            ''')
-            
-            # Add new columns if they don't exist (for existing databases)
-            try:
-                conn.execute('ALTER TABLE deployments ADD COLUMN salt TEXT')
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-            
-            try:
-                conn.execute('ALTER TABLE deployments ADD COLUMN predicted_address TEXT')
-            except sqlite3.OperationalError:
-                pass  # Column already exists
-        
-        print("✅ Database initialized with user accounts")
+
     
     def get_eth_balance(self) -> float:
         """Get current ETH balance"""
@@ -383,12 +265,7 @@ class KlikTokenDeployer:
     
     def get_total_user_deposits(self) -> float:
         """Get total balance of all user deposits"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(balance), 0) FROM users WHERE balance > 0"
-            )
-            total = cursor.fetchone()[0]
-            return float(total)
+        return self.db.get_total_user_deposits()
     
     def get_available_balance(self) -> float:
         """Get balance available for bot operations (excludes user deposits)"""
@@ -411,24 +288,9 @@ class KlikTokenDeployer:
         total_balance = self.get_eth_balance()
         
         # Get all protected balances
-        with sqlite3.connect(self.db_path) as conn:
-            # User deposits
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(balance), 0) FROM users WHERE balance > 0"
-            )
-            user_deposits = float(cursor.fetchone()[0])
-            
-            # Earned fees (from fee claims) - these belong to bot owner
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_claim'"
-            )
-            earned_fees = float(cursor.fetchone()[0])
-            
-            # Pay-per-deploy fees collected
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
-            )
-            deployment_fees = float(cursor.fetchone()[0])
+        user_deposits = self.db.get_total_user_deposits()
+        earned_fees = self.db.get_balance_by_source('fee_claim')
+        deployment_fees = self.db.get_balance_by_source('pay_per_deploy')
         
         # Available for free deploys = total - all protected funds
         protected_total = user_deposits + earned_fees + deployment_fees
@@ -442,103 +304,7 @@ class KlikTokenDeployer:
         Returns:
             tuple: (can_deploy, message, days_until_cooldown_ends)
         """
-        now = datetime.now()
-        seven_days_ago = now - timedelta(days=7)
-        
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            # Get or create cooldown record
-            cursor = conn.execute('''
-                SELECT free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys
-                FROM deployment_cooldowns 
-                WHERE LOWER(username) = LOWER(?)
-            ''', (username,))
-            
-            cooldown_data = cursor.fetchone()
-            
-            if not cooldown_data:
-                # First time user
-                conn.execute('''
-                    INSERT INTO deployment_cooldowns (username, free_deploys_7d, last_free_deploy, updated_at)
-                    VALUES (?, 0, ?, ?)
-                ''', (username.lower(), now, now))
-                return True, "First deployment allowed", 0
-            
-            free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys = cooldown_data
-            
-            # Check if currently in cooldown
-            if cooldown_until and cooldown_until > now:
-                days_left = (cooldown_until - now).days + 1
-                return False, f"Progressive cooldown active. {days_left} days remaining", days_left
-            
-            # Count free deployments in last 7 days (more accurate)
-            cursor = conn.execute('''
-                SELECT COUNT(*) FROM deployments 
-                WHERE LOWER(username) = LOWER(?) 
-                AND requested_at > ? 
-                AND status = 'success'
-                AND (
-                    token_address IN (
-                        SELECT token_address FROM deployments 
-                        WHERE status = 'success'
-                        GROUP BY username, requested_at::date
-                        HAVING COUNT(*) = 1
-                    )
-                )
-            ''', (username, seven_days_ago))
-            
-            actual_free_deploys_7d = cursor.fetchone()[0]
-            
-            # Update the count if different
-            if actual_free_deploys_7d != free_deploys_7d:
-                free_deploys_7d = actual_free_deploys_7d
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET free_deploys_7d = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (free_deploys_7d, now, username))
-            
-            # Check if they deployed yesterday (for consecutive days tracking)
-            yesterday = now.date() - timedelta(days=1)
-            if last_free_deploy and last_free_deploy.date() == yesterday:
-                # Consecutive day deployment
-                consecutive_days += 1
-            elif last_free_deploy and last_free_deploy.date() < yesterday:
-                # Reset consecutive days
-                consecutive_days = 0
-            
-            # Progressive cooldown logic - MUCH MORE RESTRICTIVE
-            if free_deploys_7d >= 2:  # 2+ deploys in 7 days = immediate long cooldown
-                # Apply 30-day cooldown for heavy usage
-                cooldown_end = now + timedelta(days=30)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Multiple free deployments detected. 30-day cooldown applied", 30
-                
-            elif free_deploys_7d >= 1 and consecutive_days >= 2:  # Deployed yesterday AND today
-                # Apply 14-day cooldown for back-to-back usage
-                cooldown_end = now + timedelta(days=14)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Back-to-back deployments detected. 14-day cooldown applied", 14
-            
-            # Update last deployment time
-            conn.execute('''
-                UPDATE deployment_cooldowns 
-                SET consecutive_days = ?, updated_at = ?
-                WHERE LOWER(username) = LOWER(?)
-            ''', (consecutive_days, now, username))
-            
-            # More informative message about limits
-            if free_deploys_7d == 1:
-                return True, f"Deployment allowed (1 free used this week - next free deploy triggers 30-day cooldown)", 0
-            else:
-                return True, f"Deployment allowed (first free this week)", 0
+        return self.db.check_progressive_cooldown(username)
     
     def check_holder_weekly_deployments(self, username: str) -> int:
         """Check how many holder deployments user has made this week
@@ -546,35 +312,7 @@ class KlikTokenDeployer:
         Returns:
             int: Number of holder deployments in the last 7 days
         """
-        seven_days_ago = datetime.now() - timedelta(days=7)
-        
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            # Count holder deployments in last 7 days from deployments table
-            cursor = conn.execute('''
-                SELECT COUNT(*) FROM deployments 
-                WHERE LOWER(username) = LOWER(?) 
-                AND requested_at > ? 
-                AND status = 'success'
-                AND tx_hash IN (
-                    SELECT tx_hash FROM deployments d
-                    INNER JOIN users u ON LOWER(d.username) = LOWER(u.twitter_username)
-                    WHERE u.is_holder = 1
-                )
-            ''', (username, seven_days_ago))
-            
-            holder_deploys_7d = cursor.fetchone()[0]
-            
-            # Also check from daily_limits for more accurate count
-            cursor = conn.execute('''
-                SELECT COALESCE(SUM(holder_deploys), 0) 
-                FROM daily_limits 
-                WHERE LOWER(username) = LOWER(?) AND date >= date(?)
-            ''', (username, seven_days_ago))
-            
-            daily_limits_count = cursor.fetchone()[0]
-            
-            # Return the maximum of both counts (in case of discrepancy)
-            return max(holder_deploys_7d, daily_limits_count)
+        return self.db.check_holder_weekly_deployments(username)
     
     async def generate_salt_and_address(self, token_name: str, token_symbol: str) -> Tuple[str, str]:
         """Generate salt using Klik Finance API and calculate predicted address"""
@@ -771,23 +509,7 @@ class KlikTokenDeployer:
         available_bot_balance_for_free = self.get_available_balance_for_free_deploys()
         
         # Get deployment counts
-        with sqlite3.connect(self.db_path) as conn:
-            # Get or create daily limits (still needed for free deploys)
-            cursor = conn.execute('''
-                SELECT free_deploys, holder_deploys 
-                FROM daily_limits 
-                WHERE username = ? AND date = ?
-            ''', (username.lower(), today))
-            
-            daily_stats = cursor.fetchone()
-            if daily_stats:
-                free_deploys_today, _ = daily_stats  # Ignore daily holder count
-            else:
-                free_deploys_today = 0
-                conn.execute('''
-                    INSERT INTO daily_limits (username, date, free_deploys, holder_deploys)
-                    VALUES (?, ?, 0, 0)
-                ''', (username.lower(), today))
+        free_deploys_today, _ = self.db.get_daily_deployment_stats(username, today)
         
         # Get holder weekly deployments
         holder_deploys_this_week = self.check_holder_weekly_deployments(username) if is_holder else 0
@@ -1175,7 +897,7 @@ Quick & easy deposits!"""
                     # Update request
                     request.tx_hash = tx_hash_hex
                     request.status = "deploying"
-                    self._update_deployment_in_db(request)
+                    self.db.update_deployment(request)
                     
                     # Wait for confirmation
                     print("⏳ Waiting for confirmation...")
@@ -1235,84 +957,32 @@ Quick & easy deposits!"""
                 actual_gas_used = receipt['gasUsed'] * receipt['effectiveGasPrice']
                 actual_gas_cost = float(self.w3.from_wei(actual_gas_used, 'ether'))
                 
-                with sqlite3.connect(self.db_path) as conn:
-                    today = datetime.now().date()
+                # Update daily limits
+                self.db.update_daily_limits(request.username, deployment_type)
+                
+                # Update cooldown tracking for free deployments
+                if deployment_type == 'free':
+                    self.db.update_cooldown_after_deployment(request.username, deployment_type)
+                elif deployment_type == 'pay-per-deploy':
+                    # Deduct from balance
+                    fee = 0 if is_holder else 0.01  # Holders pay no fee!
+                    new_balance = self.db.update_user_balance_after_deployment(
+                        request.username, actual_gas_cost, fee, request.tx_hash, request.token_symbol
+                    )
                     
-                    # Ensure daily_limits row exists before updating
-                    conn.execute('''
-                        INSERT OR IGNORE INTO daily_limits (username, date, free_deploys, holder_deploys)
-                        VALUES (?, ?, 0, 0)
-                    ''', (request.username.lower(), today))
-                    
-                    if deployment_type == 'free':
-                        conn.execute('''
-                            UPDATE daily_limits 
-                            SET free_deploys = free_deploys + 1
-                            WHERE username = ? AND date = ?
-                        ''', (request.username.lower(), today))
-                        
-                        # Update progressive cooldown tracking
-                        conn.execute('''
-                            UPDATE deployment_cooldowns 
-                            SET free_deploys_7d = free_deploys_7d + 1,
-                                last_free_deploy = ?,
-                                total_free_deploys = total_free_deploys + 1,
-                                updated_at = ?
-                            WHERE LOWER(username) = LOWER(?)
-                        ''', (datetime.now(), datetime.now(), request.username))
-                        
-                        # Insert if doesn't exist
-                        conn.execute('''
-                            INSERT OR IGNORE INTO deployment_cooldowns 
-                            (username, free_deploys_7d, last_free_deploy, total_free_deploys, updated_at)
-                            VALUES (?, 1, ?, 1, ?)
-                        ''', (request.username.lower(), datetime.now(), datetime.now()))
-                    elif deployment_type == 'holder':
-                        conn.execute('''
-                            UPDATE daily_limits 
-                            SET holder_deploys = holder_deploys + 1
-                            WHERE username = ? AND date = ?
-                        ''', (request.username.lower(), today))
-                    elif deployment_type == 'pay-per-deploy':
-                        # Deduct from balance with atomic update
-                        fee = 0 if is_holder else 0.01  # Holders pay no fee!
-                        total_deducted = actual_gas_cost + fee
-                        
-                        # Use atomic balance update to prevent race conditions
-                        cursor = conn.execute('''
-                            UPDATE users 
-                            SET balance = balance - ?
-                            WHERE LOWER(twitter_username) = LOWER(?) AND balance >= ?
-                            RETURNING balance
-                        ''', (total_deducted, request.username, total_deducted))
-                        
-                        result = cursor.fetchone()
-                        if result is None:
-                            # Balance was insufficient (race condition)
-                            self.logger.error(f"Race condition: User @{request.username} balance insufficient after deployment")
+                    if new_balance is not None:
+                        if fee > 0:
+                            print(f"💰 Deducted {actual_gas_cost + fee:.4f} ETH from balance (gas: {actual_gas_cost:.4f}, fee: {fee:.4f})")
                         else:
-                            new_balance = result[0]
-                            if fee > 0:
-                                print(f"💰 Deducted {total_deducted:.4f} ETH from balance (gas: {actual_gas_cost:.4f}, fee: {fee:.4f})")
-                                # Track platform fee as separate balance source
-                                conn.execute('''
-                                    INSERT INTO balance_sources (source_type, amount, tx_hash, description)
-                                    VALUES ('pay_per_deploy', ?, ?, ?)
-                                ''', (fee, request.tx_hash, f"Platform fee from @{request.username}'s ${request.token_symbol}"))
-                            else:
-                                print(f"🎯 Deducted {actual_gas_cost:.4f} ETH from holder balance (gas only, NO FEES!)")
-                            print(f"   New balance: {new_balance:.4f} ETH")
-                            
-                            # Log balance change for audit trail
-                            self.logger.info(f"Balance deduction: @{request.username} -{total_deducted:.4f} ETH (new balance: {new_balance:.4f})")
+                            print(f"🎯 Deducted {actual_gas_cost:.4f} ETH from holder balance (gas only, NO FEES!)")
+                        print(f"   New balance: {new_balance:.4f} ETH")
+                        
+                        # Log balance change for audit trail
+                        self.logger.info(f"Balance deduction: @{request.username} -{actual_gas_cost + fee:.4f} ETH (new balance: {new_balance:.4f})")
                 
                 # Store image IPFS if we have it
                 if image_ipfs:
-                    with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-                        conn.execute(
-                            "UPDATE deployments SET image_ipfs = ? WHERE tweet_id = ?",
-                            (image_ipfs, request.tweet_id)
-                        )
+                    self.db.update_image_ipfs(request.tweet_id, image_ipfs)
                 
                 return True
             else:
@@ -1326,7 +996,7 @@ Quick & easy deposits!"""
             self.logger.error(f"Deployment failed for {request.username}: {e}")
             return False
         finally:
-            self._update_deployment_in_db(request)
+            self.db.update_deployment(request)
     
     def _extract_token_address_from_receipt(self, receipt) -> Optional[str]:
         """Extract token address from transaction receipt"""
@@ -1344,30 +1014,7 @@ Quick & easy deposits!"""
             self.logger.error(f"Error extracting token address: {e}")
             return None
     
-    def _save_deployment_to_db(self, request: DeploymentRequest):
-        """Save deployment request to database"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            conn.execute('''
-                INSERT OR REPLACE INTO deployments 
-                (tweet_id, username, token_name, token_symbol, requested_at, 
-                 deployed_at, tx_hash, token_address, status, tweet_url, 
-                 parent_tweet_id, image_url, salt, predicted_address)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                request.tweet_id, request.username.lower(), request.token_name, request.token_symbol,
-                request.requested_at, request.deployed_at, request.tx_hash, request.token_address, 
-                request.status, request.tweet_url, request.parent_tweet_id, request.image_url,
-                request.salt, request.predicted_address
-            ))
-    
-    def _update_deployment_in_db(self, request: DeploymentRequest):
-        """Update deployment in database"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            conn.execute('''
-                UPDATE deployments 
-                SET deployed_at=?, tx_hash=?, token_address=?, status=?
-                WHERE tweet_id=?
-            ''', (request.deployed_at, request.tx_hash, request.token_address, request.status, request.tweet_id))
+
     
     def send_telegram_notification(self, request: DeploymentRequest, success: bool):
         """Send Telegram notification about deployment"""
@@ -1475,11 +1122,7 @@ Quick & easy deposits!"""
             # SAFETY: Check if this is from the bot itself
             if request.username.lower() == self.bot_username.lower():
                 # Check if this is the first deployment ever
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.execute(
-                        "SELECT COUNT(*) FROM deployments WHERE status = 'success'"
-                    )
-                    successful_deploys = cursor.fetchone()[0]
+                successful_deploys = self.db.get_successful_deploys_count()
                 
                 if successful_deploys > 0:
                     # Skip replying to own tweets after first deployment
@@ -1637,11 +1280,7 @@ You sent: Missing $"""
             # SAFETY: Check if this is from the bot itself
             if username.lower() == self.bot_username.lower():
                 # Check if this is the first deployment ever
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.execute(
-                        "SELECT COUNT(*) FROM deployments WHERE status = 'success'"
-                    )
-                    successful_deploys = cursor.fetchone()[0]
+                successful_deploys = self.db.get_successful_deploys_count()
                 
                 if successful_deploys > 0:
                     # Skip processing bot's own tweets after first deployment
@@ -1831,7 +1470,7 @@ You sent: Missing $"""
                     return "❌ Deployment cancelled by user"
             
             # Save to DB
-            self._save_deployment_to_db(request)
+            self.db.save_deployment(request)
             
             # Add to deployment queue instead of deploying directly
             try:
@@ -1872,23 +1511,10 @@ You sent: Missing $"""
     
     def get_deployment_stats(self) -> Dict:
         """Get deployment statistics"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            cursor = conn.execute('''
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
-                    COUNT(DISTINCT username) as unique_users,
-                    SUM(CASE WHEN image_ipfs IS NOT NULL THEN 1 ELSE 0 END) as with_images
-                FROM deployments
-                WHERE requested_at > datetime('now', '-24 hours')
-            ''')
-            stats = cursor.fetchone()
+        stats = self.db.get_deployment_stats()
         
         return {
-            'total_requests_24h': stats[0],
-            'successful_deploys_24h': stats[1],
-            'unique_users_24h': stats[2],
-            'tokens_with_images_24h': stats[3],
+            **stats,
             'current_balance': self.get_eth_balance(),
             'user_deposits': self.get_total_user_deposits(),
             'available_balance': self.get_available_balance(),
@@ -2139,13 +1765,7 @@ You sent: Missing $"""
 
     def get_user_balance(self, username: str) -> float:
         """Get user's ETH balance from database"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT balance FROM users WHERE LOWER(twitter_username) = LOWER(?)",
-                (username,)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else 0.0
+        return self.db.get_user_balance(username)
     
     def check_holder_status(self, username: str) -> bool:
         """Check if user is a verified holder"""
@@ -2160,53 +1780,25 @@ You sent: Missing $"""
                         return True
         
         # Check database for $DOK holder status
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT is_holder, eth_address FROM users WHERE LOWER(twitter_username) = LOWER(?)",
-                (username,)
-            )
-            result = cursor.fetchone()
-            
-            if not result:
-                return False
-            
-            is_holder, wallet = result
-            
-            # SECURITY: Check if user has ever deposited from this wallet
-            # This proves they own the wallet
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND from_address = ? AND confirmed = 1",
-                (username, wallet)
-            )
-            deposit_count = cursor.fetchone()[0]
-            
-            if deposit_count == 0:
-                # No deposits from this wallet = not verified
-                self.logger.info(f"@{username} has not deposited from wallet {wallet[:6]}...{wallet[-4:]} - holder benefits disabled")
-                return False
-            
-            # Wallet is verified through deposits - check DOK balance
-            if wallet and not is_holder:
-                # Import holder verification dynamically
-                try:
-                    from holder_verification import check_holder_status as verify_dok_holder
-                    
-                    # Check real-time holder status
-                    is_holder_now, balance, percentage = verify_dok_holder(wallet)
-                    
-                    if is_holder_now:
-                        # Update database
-                        conn.execute(
-                            "UPDATE users SET is_holder = 1, holder_balance = ? WHERE LOWER(twitter_username) = LOWER(?)",
-                            (balance, username)
-                        )
-                        conn.commit()
-                        self.logger.info(f"Updated @{username} to holder status with {balance:.0f} DOK ({percentage:.2f}%) - wallet verified via deposits")
-                        return True
-                except Exception as e:
-                    self.logger.error(f"Error checking real-time holder status: {e}")
-            
-            return bool(is_holder)
+        is_holder, wallet = self.db.check_holder_status(username)
+        
+        if not is_holder and wallet:
+            # Wallet exists but not marked as holder - check real-time DOK balance
+            try:
+                from holder_verification import check_holder_status as verify_dok_holder
+                
+                # Check real-time holder status
+                is_holder_now, balance, percentage = verify_dok_holder(wallet)
+                
+                if is_holder_now:
+                    # Update database
+                    self.db.update_holder_status(username, True, balance)
+                    self.logger.info(f"Updated @{username} to holder status with {balance:.0f} DOK ({percentage:.2f}%) - wallet verified via deposits")
+                    return True
+            except Exception as e:
+                self.logger.error(f"Error checking real-time holder status: {e}")
+        
+        return is_holder
     
     async def _send_queue_status_reply(self, tweet_id: str, username: str, position: int) -> bool:
         """Send a quick status update about queue position"""
@@ -2285,11 +1877,7 @@ Your token will deploy soon ⏳"""
             # SAFETY: Check if this is from the bot itself
             if username.lower() == self.bot_username.lower():
                 # Check if this is the first deployment ever
-                with sqlite3.connect(self.db_path) as conn:
-                    cursor = conn.execute(
-                        "SELECT COUNT(*) FROM deployments WHERE status = 'success'"
-                    )
-                    successful_deploys = cursor.fetchone()[0]
+                successful_deploys = self.db.get_successful_deploys_count()
                 
                 if successful_deploys > 0:
                     # Skip replying to own tweets after first deployment
