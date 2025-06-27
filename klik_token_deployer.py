@@ -789,13 +789,25 @@ class KlikTokenDeployer:
                     # They can still pay to deploy
                     return True, f"💰 Pay-per-deploy ({cooldown_msg.lower()}. Cost: {total_cost:.4f} ETH)"
                 else:
-                    # Cannot deploy at all
-                    return False, f"""⏳ Progressive cooldown active!
+                    # Cannot deploy at all - BE VERY CLEAR about the new system
+                    if cooldown_days >= 30:
+                        return False, f"""⏳ COOLDOWN: You used your FREE deploy this week!
 
-{cooldown_msg}
-Wait {cooldown_days} days or deposit ETH to deploy now.
+Next free deploy: {cooldown_days} days
+New limit: ~1 free deploy per week
 
-Visit t.me/DeployOnKlik"""
+Want to deploy NOW? 
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Or hold 5M+ $DOK for 2 free/day"""
+                    else:
+                        return False, f"""⏳ COOLDOWN: Back-to-back deployments detected!
+
+Wait: {cooldown_days} days
+New limit: ~1 free deploy per week
+
+Want to deploy NOW?
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Or hold 5M+ $DOK for 2 free/day"""
         
         if likely_gas_gwei <= gas_limit_for_user:
             # Check follower count for free deployments
@@ -831,7 +843,14 @@ Deposit to deploy now: t.me/DeployOnKlik"""
                 else:
                     return True, f"✅ Free deployment allowed (gas: {likely_gas_gwei:.1f} gwei)"
             else:
-                return False, f"🚫 Daily free limit reached. Visit t.me/DeployOnKlik for more info!"
+                # This should rarely happen with progressive cooldown, but just in case
+                return False, f"""🚫 You've already used your free deployment!
+
+New limit: ~1 free deploy per week
+
+Want to deploy NOW?
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Or hold 5M+ $DOK for 2 free/day"""
         
         # Tier 2: Holder deployment (gas <= 15 gwei)
         if is_holder:
@@ -2370,6 +2389,31 @@ Your token will deploy soon ⏳"""
 Please try again in a few minutes ⏳
 
 Status: t.me/DeployOnKlik"""
+            elif "COOLDOWN" in instructions:
+                # Handle new progressive cooldown messages
+                if "You used your FREE deploy this week" in instructions:
+                    cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
+                    days = cooldown_match.group(1) if cooldown_match else "30"
+                    reply_text = f"""@{username} Weekly free deploy used! ⏳
+
+Wait {days} days OR:
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 2/day"""
+                elif "Back-to-back deployments" in instructions:
+                    cooldown_match = re.search(r'Wait: (\d+) days', instructions)
+                    days = cooldown_match.group(1) if cooldown_match else "14"
+                    reply_text = f"""@{username} Cooldown active! (back-to-back deploys)
+
+Wait {days} days OR:
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 2/day"""
+                else:
+                    # Generic cooldown message
+                    reply_text = f"""@{username} Cooldown active! (~1 free/week limit)
+
+Skip cooldown:
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 2/day"""
             elif "Gas too high" in instructions:
                 gas_match = re.search(r'\((\d+\.?\d*) gwei\)', instructions)
                 gas_value = gas_match.group(1) if gas_match else "high"
@@ -2384,11 +2428,13 @@ Deposit ETH for any gas: t.me/DeployOnKlik"""
 
 You have: {follower_count}
 Or deposit ETH: t.me/DeployOnKlik"""
-            elif "Daily free limit reached" in instructions or "Daily limit reached" in instructions:
-                reply_text = f"""@{username} Daily limit reached! (1 free/day)
+            elif "already used your free deployment" in instructions:
+                # Handle the new message for daily limit
+                reply_text = f"""@{username} Free deploy already used! (~1/week limit)
 
-Deposit ETH for unlimited:
-t.me/DeployOnKlik"""
+Want more?
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 2/day"""
             elif "Holder daily limit reached" in instructions:
                 reply_text = f"""@{username} Holder limit reached (2/2 today)
 
