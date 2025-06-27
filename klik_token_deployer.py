@@ -82,6 +82,11 @@ class KlikTokenDeployer:
         self.deployment_history = []
         self.user_deployments = {}
         
+        # Twitter reply rate limiting
+        self.twitter_reply_history = []  # Track Twitter replies
+        self.twitter_reply_limit = 40  # Stay under Twitter's 50/15min limit
+        self.twitter_reply_window = 900  # 15 minutes in seconds
+        
         # Queue system for deployments
         self.deployment_queue = Queue(maxsize=10)  # Max 10 pending deployments
         self.deployment_lock = Lock()  # For critical sections
@@ -1247,6 +1252,16 @@ Quick & easy deposits!"""
         Twitter requires user context auth to post tweets - Bearer Token is read-only
         """
         try:
+            # Check Twitter reply rate limit first
+            now = time.time()
+            # Remove replies older than 15 minutes
+            self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            
+            if len(self.twitter_reply_history) >= self.twitter_reply_limit:
+                self.logger.warning(f"Twitter reply rate limit reached: {len(self.twitter_reply_history)}/{self.twitter_reply_limit} in 15 minutes")
+                print(f"⚠️  Skipping Twitter reply - rate limit ({self.twitter_reply_limit} replies/15min)")
+                return False
+            
             # SAFETY: Check if this is from the bot itself
             if request.username.lower() == self.bot_username.lower():
                 # Check if this is the first deployment ever
@@ -1323,6 +1338,8 @@ You sent: Missing $"""
                 
                 if response.data:
                     self.logger.info(f"✅ Reply sent! Tweet ID: {response.data['id']}")
+                    # Track this reply for rate limiting
+                    self.twitter_reply_history.append(time.time())
                     return True
                 else:
                     self.logger.error(f"Failed to send reply: No response data")
@@ -1719,9 +1736,19 @@ You sent: Missing $"""
                         print(f"   • Queue: {queue_size}/10 pending")
                         print(f"   • Active: {active_count} deploying")
                         print(f"   • Hourly Rate: {hourly_count}/{self.max_deploys_per_hour} ({hourly_percentage:.0f}%)")
+                        
+                        # Show Twitter reply rate
+                        current_ts = time.time()
+                        twitter_replies = len([t for t in self.twitter_reply_history if current_ts - t < self.twitter_reply_window])
+                        twitter_percentage = (twitter_replies / self.twitter_reply_limit) * 100
+                        print(f"   • Twitter Replies: {twitter_replies}/{self.twitter_reply_limit} ({twitter_percentage:.0f}%) in 15min")
+                        
                         print(f"   • Total Balance: {total_balance:.4f} ETH")
                         print(f"   • User Deposits: {user_deposits:.4f} ETH (protected)")
                         print(f"   • Available: {available_balance:.4f} ETH")
+                        
+                        if twitter_replies >= self.twitter_reply_limit * 0.8:  # 80% of limit
+                            print(f"   ⚠️  TWITTER REPLY LIMIT: Only {self.twitter_reply_limit - twitter_replies} replies remaining!")
                         
                         if hourly_count >= self.max_deploys_per_hour * 0.9:  # 90% of limit
                             print(f"   ⚠️  APPROACHING HOURLY LIMIT! Only {self.max_deploys_per_hour - hourly_count} deploys remaining")
@@ -1895,6 +1922,13 @@ You sent: Missing $"""
     async def _send_queue_status_reply(self, tweet_id: str, username: str, position: int) -> bool:
         """Send a quick status update about queue position"""
         try:
+            # Check Twitter reply rate limit first
+            now = time.time()
+            self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            
+            if len(self.twitter_reply_history) >= self.twitter_reply_limit:
+                return False
+                
             if username.lower() == self.bot_username.lower():
                 return False
             
@@ -1925,7 +1959,11 @@ Your token will deploy soon ⏳"""
                     in_reply_to_tweet_id=tweet_id
                 )
                 
-                return response.data is not None
+                if response.data:
+                    self.twitter_reply_history.append(time.time())
+                    return True
+                else:
+                    return False
                     
             except Exception:
                 return False
@@ -1936,6 +1974,14 @@ Your token will deploy soon ⏳"""
     async def send_twitter_reply_instructions(self, tweet_id: str, username: str, instructions: str) -> bool:
         """Reply with instructions to use Telegram when gas is high"""
         try:
+            # Check Twitter reply rate limit first
+            now = time.time()
+            self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            
+            if len(self.twitter_reply_history) >= self.twitter_reply_limit:
+                self.logger.warning(f"Twitter instruction reply rate limit: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
+                return False
+            
             # SAFETY: Check if this is from the bot itself
             if username.lower() == self.bot_username.lower():
                 # Check if this is the first deployment ever
@@ -2027,6 +2073,7 @@ Info & deposits: t.me/DeployOnKlik"""
                 
                 if response.data:
                     self.logger.info(f"✅ Instruction reply sent! Tweet ID: {response.data['id']}")
+                    self.twitter_reply_history.append(time.time())
                     return True
                 else:
                     return False
@@ -2042,6 +2089,14 @@ Info & deposits: t.me/DeployOnKlik"""
     async def send_twitter_reply_format_error(self, tweet_id: str, username: str, tweet_text: str) -> bool:
         """Reply with helpful format instructions when user uses wrong format"""
         try:
+            # Check Twitter reply rate limit first
+            now = time.time()
+            self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
+            
+            if len(self.twitter_reply_history) >= self.twitter_reply_limit:
+                self.logger.warning(f"Twitter format error reply rate limit: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
+                return False
+            
             # SAFETY: Check if this is from the bot itself
             if username.lower() == self.bot_username.lower():
                 self.logger.warning(f"Skipping format error reply to own tweet from @{username}")
@@ -2107,6 +2162,7 @@ Symbol must be 1-10 letters/numbers only."""
                 
                 if response.data:
                     self.logger.info(f"✅ Format error reply sent! Tweet ID: {response.data['id']}")
+                    self.twitter_reply_history.append(time.time())
                     print(f"📱 Sent format help reply to @{username}")
                     return True
                 else:
