@@ -1417,18 +1417,29 @@ You sent: Missing $"""
             token_info = self.parse_tweet_for_token(tweet_text)
             if not token_info:
                 # Check if this looks like a deployment attempt before replying
-                # Look for common deployment-related keywords
                 cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip().lower()
                 
-                # Keywords that indicate someone is trying to deploy
-                deployment_keywords = ['deploy', 'launch', 'create', 'make', 'ticker:', 'symbol:', 'token:']
-                looks_like_deployment = any(keyword in cleaned_text for keyword in deployment_keywords)
+                # Only reply if they:
+                # 1. Used $ (even incorrectly)
+                # 2. Used very explicit deployment keywords
+                # 3. The tweet is more than just a few words
                 
-                # Also check if they used $ anywhere (even if incorrectly placed)
                 has_dollar_sign = '$' in tweet_text
                 
-                # Only send format help if it looks like they're trying to deploy
-                if looks_like_deployment or has_dollar_sign:
+                # More strict keywords - must be very clear deployment intent
+                explicit_keywords = [
+                    'deploy', 'launch', 'create token', 'make token', 
+                    'ticker:', 'symbol:', 'token name:', 
+                    'deploy my', 'launch my', 'create my'
+                ]
+                has_explicit_keyword = any(keyword in cleaned_text for keyword in explicit_keywords)
+                
+                # Check if tweet has substance (not just "alpha" or "gm")
+                word_count = len(cleaned_text.split())
+                has_substance = word_count >= 3  # At least 3 words after removing mention
+                
+                # Only send format help if VERY clear they're trying to deploy
+                if has_dollar_sign or (has_explicit_keyword and has_substance):
                     error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name or @DeployOnKlik $SYMBOL + Token Name"
                     
                     # Send Twitter reply to help the user
