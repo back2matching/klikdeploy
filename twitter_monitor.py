@@ -65,20 +65,20 @@ class TwitterMonitor:
         
         if not deployment_rule and not verification_rule:
             print("⚠️  No active filter rules found!")
-            print("📝 Setting up both deployment and verification rules...")
-            success = await filter_manager.setup_both_rules()
+            print("📝 Setting up deployment rule (handles both deployments and verification)...")
+            success = await filter_manager.setup_deployment_only()
             if not success:
                 print("❌ Failed to set up filter rules. Please check manually at https://twitterapi.io")
                 return
-            print("✅ Both filter rules activated!")
+            print("✅ Deployment rule activated (handles both types)!")
         elif not verification_rule:
-            print("⚠️  Missing verification rule!")
-            print("📝 Setting up verification rule...")
-            success = await filter_manager.setup_verification_rule(interval_seconds=15.0)
+            print("⚠️  Missing deployment and/or verification rules!")
+            print("📝 Setting up deployment rule (handles both deployments and verification)...")
+            success = await filter_manager.setup_deployment_only()
             if not success:
-                print("❌ Failed to set up verification rule")
+                print("❌ Failed to set up deployment rule")
                 return
-            print("✅ Verification rule activated!")
+            print("✅ Deployment rule activated (handles both types)!")
         
         # Show current rules
         if active_rules:
@@ -584,8 +584,16 @@ class TwitterMonitor:
         import sqlite3
         
         # Pattern: "@DeployOnKlik !verify user [CODE] in order to use start claiming fees from @[username]"
-        verification_pattern = r"@deployonklik\s+!verify\s+user\s+([A-Z0-9]{8})\s+in\s+order\s+to\s+use\s+start\s+claiming\s+fees\s+from\s+@(\w+)"
+        # More flexible pattern to handle mentions before @DeployOnKlik and spacing variations
+        verification_pattern = r"@deployonklik\s+!verify\s+user\s+([a-zA-Z0-9]{8})\s+in\s+order\s+to\s+use\s+start\s+claiming\s+fees\s+from\s+@(\w+)"
         match = re.search(verification_pattern, text.lower())
+        
+        # Debug logging for verification pattern matching
+        if "@deployonklik" in text.lower() and "!verify user" in text.lower():
+            self.logger.info(f"Potential verification tweet from @{username}: {text[:100]}")
+            self.logger.info(f"Text in lowercase: {text.lower()}")
+            self.logger.info(f"Regex pattern: {verification_pattern}")
+            self.logger.info(f"Pattern match result: {match}")
         
         if not match:
             return None

@@ -935,6 +935,138 @@ async def test_find_dok_pool():
         import traceback
         traceback.print_exc()
 
+async def manual_add_treasury_funds():
+    """Manually add funds to fee detection treasury for more free deployments"""
+    print("\n💰 ADD TREASURY FUNDS FOR FREE DEPLOYMENTS")
+    print("="*50)
+    
+    try:
+        # Show current status first
+        conn = sqlite3.connect('deployments.db')
+        
+        # Get current treasury balance
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_detection'"
+        )
+        treasury_balance = cursor.fetchone()[0]
+        
+        # Get current wallet balance
+        current_balance = w3.eth.get_balance(DEPLOYER_ADDRESS)
+        wallet_balance = float(w3.from_wei(current_balance, 'ether'))
+        
+        # Get user deposits (protected)
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(balance), 0) FROM users"
+        )
+        user_deposits = cursor.fetchone()[0]
+        
+        # Get platform fees (protected)  
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
+        )
+        platform_fees = cursor.fetchone()[0]
+        
+        print(f"💰 Current Status:")
+        print(f"   Wallet Balance: {wallet_balance:.4f} ETH")
+        print(f"   Treasury (recorded): {treasury_balance:.4f} ETH")
+        print(f"   User Deposits: {user_deposits:.4f} ETH (protected)")
+        print(f"   Platform Fees: {platform_fees:.4f} ETH (protected)")
+        
+        # Calculate how much has been spent from treasury
+        spent_from_treasury = treasury_balance - (wallet_balance - user_deposits - platform_fees)
+        if spent_from_treasury > 0:
+            print(f"   ✅ Spent on free deploys: {spent_from_treasury:.4f} ETH")
+        
+        # Calculate available for free deployments
+        protected_total = user_deposits + platform_fees
+        available_for_free = wallet_balance - (protected_total * 1.05)
+        print(f"   Available for FREE deploys: {available_for_free:.4f} ETH")
+        
+        print(f"\n💡 How Treasury Works:")
+        print(f"   - Fee detection captures 50% of volume fees")
+        print(f"   - This treasury funds FREE deployments")
+        print(f"   - Spent treasury = gas costs for free deploys")
+        
+        print(f"\n🎯 Current gas cost per deploy: ~0.013-0.065 ETH")
+        if available_for_free > 0:
+            estimated_deploys = int(available_for_free / 0.04)  # Conservative estimate
+            print(f"   Estimated free deploys remaining: ~{estimated_deploys}")
+        
+        # Ask if they want to add funds
+        print(f"\n" + "="*50)
+        amount_str = input("Enter ETH amount to add to treasury (or press Enter to cancel): ").strip()
+        
+        if not amount_str:
+            print("❌ Cancelled")
+            conn.close()
+            return
+            
+        try:
+            amount = float(amount_str)
+            if amount <= 0:
+                print("❌ Amount must be positive")
+                conn.close()
+                return
+                
+            if amount > 5:
+                print("❌ Maximum 5 ETH per addition for safety")
+                conn.close()
+                return
+                
+        except ValueError:
+            print("❌ Invalid amount")
+            conn.close()
+            return
+        
+        # Ask for description
+        description = input(f"Description for this {amount} ETH addition: ").strip()
+        if not description:
+            description = f"Manual treasury addition for free deployments"
+            
+        # Generate a manual transaction hash (for tracking)
+        import hashlib
+        import time
+        manual_data = f"manual_treasury_{amount}_{time.time()}_{description}"
+        manual_tx_hash = "0x" + hashlib.sha256(manual_data.encode()).hexdigest()[:64]
+        
+        # Confirm the addition
+        print(f"\n🔍 CONFIRM TREASURY ADDITION:")
+        print(f"   Amount: {amount} ETH")
+        print(f"   Description: {description}")
+        print(f"   Tracking hash: {manual_tx_hash[:16]}...")
+        print(f"\n⚠️  NOTE: This is accounting only - you must manually")
+        print(f"   transfer {amount} ETH to the deployer wallet:")
+        print(f"   {DEPLOYER_ADDRESS}")
+        
+        confirm = input(f"\n✅ Add {amount} ETH to treasury? (yes/no): ").lower()
+        
+        if confirm != 'yes':
+            print("❌ Cancelled")
+            conn.close()
+            return
+            
+        # Add to treasury
+        conn.execute('''
+            INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+            VALUES ('fee_detection', ?, ?, ?)
+        ''', (amount, manual_tx_hash, description))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"\n✅ SUCCESS!")
+        print(f"   Added {amount} ETH to fee detection treasury")
+        print(f"   New treasury total: {treasury_balance + amount:.4f} ETH")
+        print(f"   Estimated additional free deploys: ~{int(amount / 0.04)}")
+        print(f"\n🚨 IMPORTANT: Transfer {amount} ETH to deployer wallet:")
+        print(f"   {DEPLOYER_ADDRESS}")
+        print(f"   Otherwise balance calculations will be wrong!")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 if __name__ == "__main__":
     while True:
         print("\n" + "="*50)
@@ -951,9 +1083,10 @@ if __name__ == "__main__":
         print("8. 🤖 AUTOMATED PROCESSING (no confirmations)")
         print("9. Test DOK price from V3 pool")
         print("10. Test finding DOK pool on Uniswap V3")
-        print("11. Exit")
+        print("11. 💰 Add treasury funds for free deployments")
+        print("12. Exit")
         
-        choice = input("\nEnter choice (1-11): ")
+        choice = input("\nEnter choice (1-12): ")
         
         if choice == "1":
             asyncio.run(detect_incoming_fee_claims())
@@ -976,11 +1109,13 @@ if __name__ == "__main__":
         elif choice == "10":
             asyncio.run(test_find_dok_pool())
         elif choice == "11":
+            asyncio.run(manual_add_treasury_funds())
+        elif choice == "12":
             print("\n👋 Goodbye!")
             break
         else:
             print("\n❌ Invalid choice! Please try again.")
         
         # Small pause before showing menu again
-        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
             input("\n📌 Press Enter to return to menu...") 

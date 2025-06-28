@@ -124,12 +124,12 @@ class KlikTokenDeployer:
         available_for_free = self.get_available_balance_for_free_deploys()
         
         # Get earned balances
-        earned_fees = self.db.get_balance_by_source('fee_claim')
+        earned_fees = self.db.get_balance_by_source('fee_detection')
         platform_fees = self.db.get_balance_by_source('pay_per_deploy')
         
         print(f"💰 Total Balance: {total_balance:.4f} ETH")
         print(f"   • User deposits: {user_deposits:.4f} ETH (protected)")
-        print(f"   • Earned from claims: {earned_fees:.4f} ETH (protected)")
+        print(f"   • Fee detection treasury: {earned_fees:.4f} ETH (funds free deploys)")
         print(f"   • Platform fees: {platform_fees:.4f} ETH (protected)")
         print(f"   • Available for bot: {available_balance:.4f} ETH")
         print(f"   • Available for FREE deploys: {available_for_free:.4f} ETH")
@@ -300,18 +300,18 @@ class KlikTokenDeployer:
         
         This excludes:
         - User deposits (protected for pay-per-deploy)
-        - Earned fees from claims (protected for bot owner)
-        - Only uses original bot funding
+        - Platform fees (0.01 ETH per pay-per-deploy - protected)
+        
+        But INCLUDES fee detection treasury since that's meant to fund free operations
         """
         total_balance = self.get_eth_balance()
         
-        # Get all protected balances
+        # Get truly protected balances only (not treasury, that's for free deployments)
         user_deposits = self.db.get_total_user_deposits()
-        earned_fees = self.db.get_balance_by_source('fee_claim')
         deployment_fees = self.db.get_balance_by_source('pay_per_deploy')
         
-        # Available for free deploys = total - all protected funds
-        protected_total = user_deposits + earned_fees + deployment_fees
+        # Available for free deploys = total - only user deposits and platform fees
+        protected_total = user_deposits + deployment_fees
         available = total_balance - (protected_total * 1.05)  # 5% buffer
         
         return max(0, available)
@@ -512,9 +512,9 @@ class KlikTokenDeployer:
             return {'error': 'DOK ticker is reserved', 'error_type': 'reserved_ticker'}
         
         # Check symbol length BEFORE other validations
-        if len(symbol) > 10:
+        if len(symbol) > 16:
             return {
-                'error': f'Symbol too long ({len(symbol)} chars, max 10)',
+                'error': f'Symbol too long ({len(symbol)} chars, max 16)',
                 'error_type': 'symbol_too_long',
                 'symbol_attempted': symbol
             }
@@ -1525,7 +1525,7 @@ You sent: Missing $"""
                 
                 elif error_type == 'symbol_too_long':
                     symbol = token_info.get('symbol_attempted', '')
-                    specific_msg = f"❌ Symbol too long! ${symbol} has {len(symbol)} characters (max 10)"
+                    specific_msg = f"❌ Symbol too long! ${symbol} has {len(symbol)} characters (max 16)"
                     
                     # Send specific error reply
                     await self.send_twitter_reply_specific_error(tweet_id, username, specific_msg)
@@ -2440,7 +2440,7 @@ Symbol must be 1-10 letters/numbers only."""
             reply_text = f"""@{username} {error_message}
 
 ✅ Valid format: @DeployOnKlik $TICKER
-✅ Symbol rules: 1-10 characters, letters/numbers only
+✅ Symbol rules: 1-16 characters, letters/numbers only
 
 Try again with a shorter symbol!"""
             

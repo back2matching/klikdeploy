@@ -251,7 +251,7 @@ See [Complete Setup Guide](docs/COMPLETE_SETUP_GUIDE.md) for:
 
 Required:
 - $ prefix for symbol
-- Symbol: 1-10 alphanumeric characters
+- Symbol: 1-16 alphanumeric characters
 - Name: Optional, up to 30 characters
 - Separator: Use - or + between symbol and name
 ```

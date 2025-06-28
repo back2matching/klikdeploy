@@ -206,14 +206,39 @@ class TwitterFilterManager:
                 )
             return False
     
-    async def setup_both_rules(self) -> bool:
-        """Set up both deployment and verification rules"""
-        print("🔧 Setting up both deployment and verification rules...")
+    async def delete_verification_rule(self) -> bool:
+        """Delete the verification rule to avoid duplicate processing"""
+        existing_rules = await self.get_rules()
         
-        deployment_success = await self.setup_deployment_rule(interval_seconds=3.0)  # Keep deployment fast
-        verification_success = await self.setup_verification_rule(interval_seconds=15.0)  # Verification slower
+        # Look for our verification rule
+        verification_rule = None
+        for rule in existing_rules:
+            if rule['tag'] == f"{self.bot_username}_verification":
+                verification_rule = rule
+                break
         
-        return deployment_success and verification_success
+        if verification_rule:
+            print(f"🗑️  Found verification rule to delete: {verification_rule['tag']}")
+            success = await self.delete_rule(verification_rule['rule_id'])
+            if success:
+                print(f"✅ Deleted verification rule - deployment rule will handle all tweets")
+            return success
+        else:
+            print(f"ℹ️  No verification rule found to delete")
+            return True
+    
+    async def setup_deployment_only(self) -> bool:
+        """Set up only the deployment rule (handles both deployments and verification)"""
+        print("🔧 Setting up deployment rule only...")
+        print("💡 This rule will handle both deployments AND verification tweets")
+        
+        # First, delete any existing verification rule to avoid duplicates
+        await self.delete_verification_rule()
+        
+        # Set up only the deployment rule
+        deployment_success = await self.setup_deployment_rule(interval_seconds=3.0)
+        
+        return deployment_success
     
     async def show_all_rules(self):
         """Display all current filter rules"""
@@ -275,20 +300,21 @@ async def main():
                 await manager.delete_rule(rule['rule_id'])
             print(f"✅ Deleted {len(rules)} rules")
     
-    # Set up both deployment and verification rules
-    print(f"\n⚙️  Setting up filter rules for: @{manager.bot_username}")
+    # Set up only deployment rule (handles both deployments and verification)
+    print(f"\n⚙️  Setting up filter rule for: @{manager.bot_username}")
     print(f"📦 Deployment rule: @{manager.bot_username} ($) - 3s interval")
-    print(f"🔐 Verification rule: @{manager.bot_username} !verify user - 15s interval")
+    print(f"🔐 This rule will also handle verification tweets automatically")
     
-    success = await manager.setup_both_rules()
+    success = await manager.setup_deployment_only()
     
     if success:
-        print("\n✅ Both filter rules are active and ready for WebSocket monitoring!")
-        print(f"📡 Deployments: @{manager.bot_username} ($) - 3s interval")
-        print(f"📡 Verification: @{manager.bot_username} !verify user - 15s interval")
+        print("\n✅ Deployment filter rule is active and ready for WebSocket monitoring!")
+        print(f"📡 Single rule handles: @{manager.bot_username} ($) - 3s interval")
+        print(f"📡 Processes: Deployments + Verification tweets")
         print("\n💡 Remember: Billing starts when rules are active!")
+        print("💰 Cost savings: Using 1 rule instead of 2!")
     else:
-        print("\n❌ Failed to set up one or more filter rules")
+        print("\n❌ Failed to set up deployment filter rule")
     
     # Show final state
     print("\n📊 FINAL RULE STATUS:")

@@ -223,7 +223,7 @@ def init_db():
     conn.execute('''
         CREATE TABLE IF NOT EXISTS balance_sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_type TEXT, -- 'deposit', 'fee_claim', 'pay_per_deploy'
+            source_type TEXT, -- 'deposit', 'fee_detection', 'pay_per_deploy'
             amount REAL,
             tx_hash TEXT,
             description TEXT,
