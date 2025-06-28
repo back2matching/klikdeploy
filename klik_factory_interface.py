@@ -26,7 +26,7 @@ UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"  # V2 router for DOK
 WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 DOK_ADDRESS = "0x69ca61398eCa94D880393522C1Ef5c3D8c058837"
-BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD"
+BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD"  # Not used anymore - we hold tokens instead
 
 # DOK/WETH pair on Uniswap V3 (from the transaction logs)
 DOK_WETH_V3_POOL = "0xf6E2edc5953Da297947C6C68911E16CF1C9b64B6"
@@ -542,53 +542,9 @@ class KlikFactoryInterface:
             return None
     
     async def claim_fees_for_token(self, token_address: str) -> Optional[str]:
-        """Claim fees for a token (finds the tokenId automatically)"""
-        try:
-            # Find the tokenId for this token
-            token_id = await self.get_token_id_for_token(token_address)
-            if token_id is None:
-                logger.error(f"Could not find tokenId for token {token_address}")
-                return None
-            
-            logger.info(f"Claiming fees for token {token_address} using tokenId {token_id}")
-            
-            # Build transaction
-            function_call = self.factory.functions.collectFees(token_id)
-            
-            # Get gas estimate
-            gas_estimate = function_call.estimate_gas({
-                'from': self.account.address
-            })
-            
-            # Build transaction
-            nonce = self.w3.eth.get_transaction_count(self.account.address)
-            gas_price = self.w3.eth.gas_price
-            
-            tx = function_call.build_transaction({
-                'from': self.account.address,
-                'gas': int(gas_estimate * 1.1),
-                'gasPrice': gas_price,
-                'nonce': nonce,
-                'chainId': self.w3.eth.chain_id
-            })
-            
-            # Sign and send
-            signed_tx = self.account.sign_transaction(tx)
-            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            
-            # Wait for confirmation
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
-            
-            if receipt['status'] == 1:
-                logger.info(f"Successfully claimed fees: {tx_hash.hex()}")
-                return tx_hash.hex()
-            else:
-                logger.error("Fee claim transaction failed")
-                return None
-                
-        except Exception as e:
-            logger.error(f"Error claiming fees: {e}")
-            return None
+        """DEPRECATED - DO NOT USE - Active claiming disabled to save gas"""
+        logger.error("Active fee claiming is disabled. Fees are now claimed automatically by the platform.")
+        return None
     
     async def get_dok_price_v3(self) -> float:
         """Get current DOK price in ETH from Uniswap V3 pool"""
@@ -619,7 +575,7 @@ class KlikFactoryInterface:
             return 0.00008  # ~$0.20 at $2500 ETH
     
     async def execute_dok_buyback_v3(self, amount_eth: float, reference_tx: str) -> Dict:
-        """Execute DOK buyback on Uniswap V3 and burn"""
+        """Execute DOK buyback on Uniswap V3 and hold in our wallet"""
         try:
             amount_wei = self.w3.to_wei(amount_eth, 'ether')
             
@@ -640,7 +596,7 @@ class KlikFactoryInterface:
             function_call = self.router_v2.functions.swapExactETHForTokens(
                 min_dok_out,
                 path,
-                BURN_ADDRESS,  # Send directly to burn address
+                self.account.address,  # Send to our wallet to hold
                 deadline
             )
             
@@ -681,7 +637,7 @@ class KlikFactoryInterface:
                 except:
                     pass
                 
-                logger.info(f"Successfully bought and burned {actual_dok:,.0f} DOK: {tx_hash.hex()}")
+                logger.info(f"Successfully bought {actual_dok:,.0f} DOK (now holding): {tx_hash.hex()}")
                 
                 return {
                     'success': True,
@@ -702,138 +658,12 @@ class KlikFactoryInterface:
             }
     
     async def simulate_fee_claim(self, token_address: str) -> Dict:
-        """Simulate a fee claim using Alchemy's simulateAssetChanges to see exact amounts"""
-        try:
-            # Get tokenId for the token
-            token_id = await self.get_token_id_for_token(token_address)
-            if token_id is None:
-                logger.error(f"Could not find tokenId for token {token_address}")
-                return {'success': False, 'error': 'Token not found'}
-            
-            logger.info(f"Simulating fee claim for token {token_address} (tokenId: {token_id})")
-            
-            # Build the collectFees transaction data
-            function_data = self.factory.functions.collectFees(token_id)._encode_transaction_data()
-            
-            # Use Alchemy's simulateAssetChanges API
-            response = requests.post(self.rpc_url, json={
-                "jsonrpc": "2.0",
-                "method": "alchemy_simulateAssetChanges",
-                "id": 1,
-                "params": [{
-                    "from": self.account.address,
-                    "to": KLIK_FACTORY,
-                    "data": function_data,
-                    "value": "0x0"
-                }]
-            })
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                if 'result' in result:
-                    changes = result['result'].get('changes', [])
-                    
-                    # Parse the asset changes
-                    eth_received = 0
-                    dok_received = 0
-                    
-                    for change in changes:
-                        # Check if this is an incoming transfer to our address
-                        if change.get('to', '').lower() == self.account.address.lower():
-                            asset_type = change.get('assetType')
-                            
-                            if asset_type == 'NATIVE':
-                                # ETH transfer
-                                raw_amount = change.get('rawAmount', '0')
-                                eth_received += int(raw_amount, 16) if raw_amount.startswith('0x') else int(raw_amount)
-                            
-                            elif asset_type == 'ERC20':
-                                # Token transfer - check if it's DOK
-                                contract = change.get('contractAddress', '')
-                                if contract.lower() == DOK_ADDRESS.lower():
-                                    raw_amount = change.get('rawAmount', '0')
-                                    dok_received += int(raw_amount, 16) if raw_amount.startswith('0x') else int(raw_amount)
-                    
-                    # Convert to readable amounts
-                    eth_amount = self.w3.from_wei(eth_received, 'ether') if eth_received > 0 else 0
-                    dok_amount = dok_received / 1e18 if dok_received > 0 else 0
-                    
-                    # Check if any assets would be received
-                    if eth_amount > 0 or dok_amount > 0:
-                        logger.info(f"Simulation shows claimable: {eth_amount} ETH, {dok_amount} DOK")
-                        
-                        return {
-                            'success': True,
-                            'claimable_eth': float(eth_amount),
-                            'claimable_dok': float(dok_amount),
-                            'token_id': token_id,
-                            'gas_used': result['result'].get('gasUsed', 'Unknown')
-                        }
-                    else:
-                        return {
-                            'success': True,
-                            'claimable_eth': 0,
-                            'claimable_dok': 0,
-                            'message': 'No fees to claim',
-                            'token_id': token_id
-                        }
-                
-                elif 'error' in result:
-                    error_msg = result['error'].get('message', 'Unknown error')
-                    if 'execution reverted' in error_msg or 'revert' in error_msg:
-                        return {
-                            'success': True,
-                            'claimable_eth': 0,
-                            'claimable_dok': 0,
-                            'message': 'No fees to claim',
-                            'token_id': token_id
-                        }
-                    else:
-                        return {
-                            'success': False,
-                            'error': error_msg
-                        }
-            
-            # Fallback to gas estimation method if simulateAssetChanges fails
-            logger.warning("simulateAssetChanges not available, falling back to gas estimation")
-            
-            try:
-                # Try to estimate gas - if it succeeds, fees are claimable
-                gas_estimate = self.factory.functions.collectFees(token_id).estimate_gas({
-                    'from': self.account.address
-                })
-                
-                return {
-                    'success': True,
-                    'claimable_eth': 'Unknown (fees exist)',
-                    'message': 'Fees are claimable but exact amount requires execution',
-                    'gas_estimate': gas_estimate,
-                    'token_id': token_id
-                }
-                
-            except Exception as e:
-                error_msg = str(e)
-                if 'execution reverted' in error_msg:
-                    return {
-                        'success': True,
-                        'claimable_eth': 0,
-                        'claimable_dok': 0,
-                        'message': 'No fees to claim',
-                        'token_id': token_id
-                    }
-                else:
-                    return {
-                        'success': False,
-                        'error': f'Simulation failed: {error_msg}'
-                    }
-                    
-        except Exception as e:
-            logger.error(f"Error simulating fee claim: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+        """DEPRECATED - DO NOT USE - Active claiming disabled"""
+        logger.error("Fee simulation is disabled. Fees are now claimed automatically by the platform.")
+        return {
+            'success': False,
+            'error': 'Active fee claiming is disabled. Use detect_incoming_fee_claims instead.'
+        }
     
     async def check_claimable_fees_with_fork(self, token_address: str) -> Dict:
         """Use Alchemy's fork feature to simulate the exact fee amount"""
@@ -873,21 +703,210 @@ class KlikFactoryInterface:
             logger.error(f"Fork simulation failed: {e}")
             return await self.simulate_fee_claim(token_address)
 
+    async def decode_collect_fee_transaction(self, tx_hash: str) -> Optional[Dict]:
+        """Decode a collectFee transaction to get the tokenId and related info"""
+        try:
+            # Get transaction details
+            tx = self.w3.eth.get_transaction(tx_hash)
+            receipt = self.w3.eth.get_transaction_receipt(tx_hash)
+            
+            if not tx:
+                logger.error(f"Transaction {tx_hash} not found")
+                return None
+            
+            # Check if it's to the factory contract
+            if tx['to'].lower() != KLIK_FACTORY.lower():
+                logger.error(f"Transaction is not to Klik Factory")
+                return None
+            
+            # Decode the input data
+            try:
+                decoded_input = self.factory.decode_function_input(tx['input'])
+                function_name = decoded_input[0].fn_name
+                params = decoded_input[1]
+                
+                if function_name == 'collectFees' and 'tokenId' in params:
+                    token_id = params['tokenId']
+                    
+                    # Parse logs to find the pool and token
+                    pool_address = None
+                    token_addresses = []
+                    
+                    # Look for Collect event from the pool (has 4 topics)
+                    for log in receipt['logs']:
+                        # Collect event has signature: 0x70935338e69775456a85ddef226c395fb668b63fa0115f5f20610b388e6ca9c0
+                        if (len(log['topics']) == 4 and 
+                            log['topics'][0].hex() == '0x70935338e69775456a85ddef226c395fb668b63fa0115f5f20610b388e6ca9c0'):
+                            pool_address = log['address']
+                            logger.info(f"Found pool address from Collect event: {pool_address}")
+                        
+                        # ERC20 Transfer events (3 topics)
+                        elif (len(log['topics']) == 3 and 
+                              log['topics'][0].hex() == '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'):
+                            token_address = log['address']
+                            if token_address.lower() not in [pool_address.lower() if pool_address else '', KLIK_FACTORY.lower()]:
+                                token_addresses.append(token_address)
+                    
+                    # Identify which is the deployed token (not WETH)
+                    deployed_token = None
+                    for token in token_addresses:
+                        if token.lower() != WETH_ADDRESS.lower():
+                            deployed_token = token
+                            break
+                    
+                    if not deployed_token and token_addresses:
+                        deployed_token = token_addresses[0]  # Fallback to first token
+                    
+                    # Try to get token info from our database
+                    token_info = None
+                    if deployed_token:
+                        try:
+                            import sqlite3
+                            conn = sqlite3.connect('deployments.db')
+                            cursor = conn.execute(
+                                "SELECT token_symbol, token_name FROM deployments WHERE token_address = ?",
+                                (deployed_token,)
+                            )
+                            result = cursor.fetchone()
+                            if result:
+                                token_info = {'symbol': result[0], 'name': result[1]}
+                            conn.close()
+                        except:
+                            pass
+                    
+                    logger.info(f"Decoded fee claim - Token: {deployed_token}, Pool: {pool_address}, TokenId: {token_id}")
+                    
+                    return {
+                        'token_id': token_id,
+                        'pool_address': pool_address,
+                        'deployed_token': deployed_token,
+                        'token_addresses': token_addresses,
+                        'token_info': token_info,
+                        'tx_hash': tx_hash
+                    }
+                        
+                else:
+                    logger.error(f"Not a collectFees transaction or missing tokenId")
+                    return None
+                    
+            except Exception as e:
+                logger.error(f"Error decoding transaction input: {e}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error decoding collect fee transaction: {e}")
+            return None
+    
+    async def execute_token_buyback(self, token_address: str, amount_eth: float, destination_address: str = None) -> Dict:
+        """Execute buyback for any token and hold in our wallet"""
+        try:
+            amount_wei = self.w3.to_wei(amount_eth, 'ether')
+            
+            # Use our wallet as destination if not specified
+            if destination_address is None:
+                destination_address = self.account.address
+            
+            # Check if it's DOK - use existing method
+            if token_address.lower() == DOK_ADDRESS.lower():
+                return await self.execute_dok_buyback_v3(amount_eth, "auto_buyback")
+            
+            # For other tokens, we need to find their pool and router
+            # First check if there's a V2 pool
+            path = [WETH_ADDRESS, token_address]
+            deadline = int(self.w3.eth.get_block('latest')['timestamp']) + 300
+            
+            logger.info(f"Executing buyback: {amount_eth} ETH for {token_address}")
+            
+            # Try V2 router
+            try:
+                # Build swap transaction
+                function_call = self.router_v2.functions.swapExactETHForTokens(
+                    0,  # Accept any amount of tokens (we'll hold anyway)
+                    path,
+                    destination_address,
+                    deadline
+                )
+                
+                # Get gas estimate
+                gas_estimate = function_call.estimate_gas({
+                    'from': self.account.address,
+                    'value': amount_wei
+                })
+                
+                nonce = self.w3.eth.get_transaction_count(self.account.address)
+                gas_price = self.w3.eth.gas_price
+                
+                tx = function_call.build_transaction({
+                    'from': self.account.address,
+                    'value': amount_wei,
+                    'gas': int(gas_estimate * 1.2),
+                    'gasPrice': gas_price,
+                    'nonce': nonce,
+                    'chainId': self.w3.eth.chain_id
+                })
+                
+                # Sign and send
+                signed_tx = self.account.sign_transaction(tx)
+                tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                
+                # Wait for confirmation
+                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+                
+                if receipt['status'] == 1:
+                    logger.info(f"Successfully bought token {token_address} (now holding): {tx_hash.hex()}")
+                    
+                    return {
+                        'success': True,
+                        'tx_hash': tx_hash.hex(),
+                        'token_address': token_address,
+                        'amount_eth': amount_eth,
+                        'destination': destination_address
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': 'Transaction failed'
+                    }
+                    
+            except Exception as e:
+                logger.error(f"V2 buyback failed, token might not have liquidity: {e}")
+                # Could try V3 or other DEXs here
+                return {
+                    'success': False,
+                    'error': f'No liquidity found: {str(e)}'
+                }
+                
+        except Exception as e:
+            logger.error(f"Buyback failed: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
 # Singleton instance
 factory_interface = KlikFactoryInterface()
 
 # Export the functions for use in telegram bot
 async def claim_fees_for_token(token_address: str) -> Optional[str]:
-    """Claim fees for a token address"""
+    """DEPRECATED - Active claiming disabled"""
     return await factory_interface.claim_fees_for_token(token_address)
 
 async def simulate_fee_claim(token_address: str) -> Dict:
-    """Simulate fee claim to see claimable amount"""
+    """DEPRECATED - Active claiming disabled"""
     return await factory_interface.simulate_fee_claim(token_address)
 
 async def execute_dok_buyback(amount: float, reference_tx: str) -> Dict:
-    """Execute DOK buyback and burn"""
+    """Execute DOK buyback and hold in wallet"""
     return await factory_interface.execute_dok_buyback_v3(amount, reference_tx)
+
+# New functions for passive fee processing
+async def decode_collect_fee_transaction(tx_hash: str) -> Optional[Dict]:
+    """Decode a collectFee transaction to get token details"""
+    return await factory_interface.decode_collect_fee_transaction(tx_hash)
+
+async def execute_token_buyback(token_address: str, amount_eth: float, destination_address: str = None) -> Dict:
+    """Execute buyback for any token and hold"""
+    return await factory_interface.execute_token_buyback(token_address, amount_eth, destination_address)
 
 # Backward compatibility - these will be deprecated
 async def get_pool_address(token_address: str) -> Optional[str]:

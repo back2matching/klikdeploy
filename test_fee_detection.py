@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""
+Test script for fee detection and buyback system
+"""
+
+import asyncio
+import os
+from dotenv import load_dotenv
+from klik_factory_interface import factory_interface
+from web3 import Web3
+import requests
+import sqlite3
+from datetime import datetime, timedelta
+
+# Load env
+load_dotenv()
+
+# Initialize Web3
+RPC_URL = os.getenv('ALCHEMY_RPC_URL')
+DEPLOYER_ADDRESS = os.getenv('DEPLOYER_ADDRESS')
+w3 = Web3(Web3.HTTPProvider(RPC_URL))
+
+# Klik Factory contract address
+KLIK_FACTORY = "0x930f9FA91E1E46d8e44abC3517E2965C6F9c4763"
+
+async def detect_incoming_fee_claims():
+    """Detect incoming fee claims from Klik Factory to our deployer wallet"""
+    print("\n🔍 Detecting Incoming Fee Claims")
+    print("="*50)
+    
+    # Get recent internal transactions to our deployer
+    print(f"Checking internal transactions to: {DEPLOYER_ADDRESS}")
+    print(f"Looking for transfers from: {KLIK_FACTORY}\n")
+    
+    try:
+        # Use Alchemy to get internal transactions
+        response = requests.post(RPC_URL, json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "alchemy_getAssetTransfers",
+            "params": [{
+                "fromBlock": "0x0",  # You can adjust this to recent blocks
+                "toBlock": "latest",
+                "toAddress": DEPLOYER_ADDRESS,
+                "fromAddress": KLIK_FACTORY,
+                "category": ["internal"],  # Internal ETH transfers
+                "excludeZeroValue": True,
+                "maxCount": "0x64"  # Last 100
+            }]
+        })
+        
+        if response.status_code == 200:
+            data = response.json()
+            transfers = data.get('result', {}).get('transfers', [])
+            
+            print(f"Found {len(transfers)} internal transfers from Klik Factory\n")
+            
+            # Check database for already processed claims
+            conn = sqlite3.connect('deployments.db')
+            
+            # Process last 3 transfers with full decoding
+            for i, transfer in enumerate(transfers[-3:]):
+                tx_hash = transfer['hash']
+                value = float(transfer['value'])
+                block_num = int(transfer['blockNum'], 16) if isinstance(transfer['blockNum'], str) else transfer['blockNum']
+                
+                # Check if already processed
+                cursor = conn.execute(
+                    "SELECT id FROM fee_claims WHERE claim_tx_hash = ?",
+                    (tx_hash,)
+                )
+                is_processed = cursor.fetchone() is not None
+                
+                print(f"Transfer #{i+1}:")
+                print(f"TX: {tx_hash}")
+                print(f"   Amount: {value:.6f} ETH")
+                print(f"   Block: {block_num}")
+                print(f"   Status: {'✅ Already processed' if is_processed else '🆕 New claim!'}")
+                
+                # Decode the transaction to get token details
+                print(f"   Decoding collectFee transaction...")
+                decoded = await factory_interface.decode_collect_fee_transaction(tx_hash)
+                
+                if decoded and 'deployed_token' in decoded:
+                    token_addr = decoded['deployed_token']
+                    token_info = decoded.get('token_info', {})
+                    
+                    if token_info:
+                        print(f"   Token: ${token_info['symbol']} - {token_info['name']}")
+                    print(f"   Token Address: {token_addr}")
+                    print(f"   Token ID: {decoded['token_id']}")
+                    print(f"   Pool: {decoded.get('pool_address', 'Unknown')}")
+                    
+                    if not is_processed:
+                        # Calculate splits
+                        source_buyback = value * 0.25
+                        dok_buyback = value * 0.25
+                        treasury = value * 0.5
+                        
+                        print(f"\n   💡 Buyback Plan:")
+                        print(f"   - {source_buyback:.6f} ETH → Buy ${token_info.get('symbol', 'TOKEN')} (pump & hold)")
+                        print(f"   - {dok_buyback:.6f} ETH → Buy $DOK (pump & hold)")
+                        print(f"   - {treasury:.6f} ETH → Treasury (keep as ETH)")
+                else:
+                    print(f"   ❌ Could not decode transaction")
+                
+                print()
+            
+            # Summary (calculate before closing connection)
+            unprocessed_count = 0
+            unprocessed_value = 0.0
+            
+            for t in transfers:
+                cursor = conn.execute(
+                    "SELECT id FROM fee_claims WHERE claim_tx_hash = ?", 
+                    (t['hash'],)
+                )
+                if not cursor.fetchone():
+                    unprocessed_count += 1
+                    unprocessed_value += float(t['value'])
+            
+            conn.close()
+            
+            print(f"\n📊 Summary:")
+            print(f"   Total fee claims: {len(transfers)}")
+            print(f"   Unprocessed claims: {unprocessed_count}")
+            
+            if unprocessed_count > 0:
+                print(f"   Total unprocessed value: {unprocessed_value:.6f} ETH")
+                print(f"   Potential DOK buyback: {unprocessed_value * 0.25:.6f} ETH")
+                print(f"   Potential source token buybacks: {unprocessed_value * 0.25:.6f} ETH")
+                print(f"   Treasury earnings: {unprocessed_value * 0.5:.6f} ETH")
+                
+        else:
+            print(f"❌ Error fetching transfers: {response.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+async def test_buyback_split():
+    """Test the buyback split logic with a mock fee claim"""
+    print("\n💰 Testing Buyback Split Logic")
+    print("="*50)
+    
+    # Mock values for testing
+    total_received = 0.1  # 0.1 ETH received from fee claim
+    source_token = "0x692Ea3f6E92000a966874715A6cC53c6E74E269F"  # Example token (MOON)
+    
+    print(f"Mock Fee Claim:")
+    print(f"   Total Received: {total_received} ETH")
+    print(f"   Source Token: {source_token}")
+    print(f"   DOK Token: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837\n")
+    
+    # Calculate splits
+    source_buyback = total_received * 0.25
+    dok_buyback = total_received * 0.25
+    treasury = total_received * 0.5
+    
+    print(f"Split Calculation:")
+    print(f"   Source Token Buyback (25%): {source_buyback:.6f} ETH")
+    print(f"   DOK Buyback (25%): {dok_buyback:.6f} ETH")
+    print(f"   Treasury (50%): {treasury:.6f} ETH")
+    print(f"   Total: {source_buyback + dok_buyback + treasury:.6f} ETH\n")
+    
+    # Show what would happen
+    print(f"Execution Plan:")
+    print(f"1. Buy {source_buyback:.6f} ETH of source token (pump & hold)")
+    print(f"2. Buy {dok_buyback:.6f} ETH of DOK (pump & hold)")
+    print(f"3. Keep {treasury:.6f} ETH in treasury\n")
+    
+    response = input("Test actual buyback execution? (yes/no): ").lower()
+    
+    if response == 'yes':
+        # Test DOK buyback only (smaller amount)
+        test_amount = 0.001  # Small test amount
+        print(f"\n🧪 Testing with {test_amount} ETH for DOK buyback...")
+        
+        result = await factory_interface.execute_dok_buyback_v3(test_amount, "test_split")
+        
+        if result['success']:
+            print(f"✅ Test buyback successful!")
+            print(f"   TX: {result['tx_hash']}")
+            print(f"   DOK burned: {result.get('dok_amount', 0):,.2f}")
+        else:
+            print(f"❌ Test buyback failed: {result.get('error', 'Unknown error')}")
+
+async def test_small_dok_buyback():
+    """Test a small manual buyback of DOK"""
+    print("\n🧪 Testing Small DOK Buyback")
+    print("="*50)
+    
+    amount_eth = 0.01
+    print(f"\nTesting buyback of {amount_eth} ETH worth of DOK...")
+    
+    # Get current DOK price
+    dok_price = await factory_interface.get_dok_price_v3()
+    expected_dok = amount_eth / dok_price
+    
+    print(f"\nCurrent DOK price: {dok_price:.8f} ETH")
+    print(f"Expected DOK from buyback: {expected_dok:,.2f} DOK")
+    print(f"Will be held in deployer wallet")
+    
+    response = input("\n⚠️  Execute buyback? (yes/no): ").lower()
+    
+    if response == 'yes':
+        print("\n🔄 Executing buyback...")
+        result = await factory_interface.execute_dok_buyback_v3(amount_eth, "manual_test")
+        
+        if result['success']:
+            print(f"✅ Buyback successful!")
+            print(f"   TX: {result['tx_hash']}")
+            print(f"   DOK bought: {result.get('dok_amount', expected_dok):,.2f} (now holding)")
+            print(f"   View: https://etherscan.io/tx/{result['tx_hash']}")
+        else:
+            print(f"❌ Buyback failed: {result.get('error', 'Unknown error')}")
+    else:
+        print("\n⏭️  Skipping buyback")
+
+async def process_single_fee_claim():
+    """Process a single fee claim through the entire pipeline"""
+    print("\n🚀 Processing Single Fee Claim Pipeline")
+    print("="*50)
+    
+    # Step 1: Find an unprocessed fee claim
+    print("Step 1: Finding unprocessed fee claims...")
+    
+    try:
+        # Get recent internal transactions
+        response = requests.post(RPC_URL, json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "alchemy_getAssetTransfers",
+            "params": [{
+                "fromBlock": "0x0",
+                "toBlock": "latest",
+                "toAddress": DEPLOYER_ADDRESS,
+                "fromAddress": KLIK_FACTORY,
+                "category": ["internal"],
+                "excludeZeroValue": True,
+                "maxCount": "0x64"
+            }]
+        })
+        
+        if response.status_code != 200:
+            print(f"❌ Error fetching transfers: {response.status_code}")
+            return
+            
+        data = response.json()
+        transfers = data.get('result', {}).get('transfers', [])
+        
+        if not transfers:
+            print("❌ No fee claims found")
+            return
+        
+        # Find first unprocessed transfer
+        conn = sqlite3.connect('deployments.db')
+        unprocessed_transfer = None
+        
+        for transfer in reversed(transfers):  # Start from newest
+            tx_hash = transfer['hash']
+            cursor = conn.execute(
+                "SELECT id FROM fee_claims WHERE claim_tx_hash = ?",
+                (tx_hash,)
+            )
+            if not cursor.fetchone():
+                unprocessed_transfer = transfer
+                break
+        
+        if not unprocessed_transfer:
+            print("❌ No unprocessed fee claims found")
+            print(f"   Total transfers: {len(transfers)}")
+            print("   All have been processed already")
+            conn.close()
+            return
+        
+        # Step 2: Decode the transaction
+        tx_hash = unprocessed_transfer['hash']
+        value = float(unprocessed_transfer['value'])
+        
+        print(f"\n✅ Found unprocessed claim: {tx_hash}")
+        print(f"   Amount: {value:.6f} ETH")
+        
+        print("\nStep 2: Decoding transaction to get token details...")
+        decoded = await factory_interface.decode_collect_fee_transaction(tx_hash)
+        
+        if not decoded or 'deployed_token' not in decoded:
+            print("❌ Could not decode transaction")
+            conn.close()
+            return
+        
+        token_address = decoded['deployed_token']
+        token_info = decoded.get('token_info', {})
+        token_symbol = token_info.get('symbol', 'UNKNOWN')
+        token_name = token_info.get('name', 'Unknown Token')
+        
+        print(f"✅ Decoded successfully!")
+        print(f"   Token: ${token_symbol} - {token_name}")
+        print(f"   Address: {token_address}")
+        print(f"   Token ID: {decoded['token_id']}")
+        
+        # Step 3: Calculate splits
+        print("\nStep 3: Calculating buyback splits...")
+        source_buyback = value * 0.25
+        dok_buyback = value * 0.25
+        treasury = value * 0.5
+        
+        print(f"   Source token buyback: {source_buyback:.6f} ETH")
+        print(f"   DOK buyback: {dok_buyback:.6f} ETH")
+        print(f"   Treasury: {treasury:.6f} ETH")
+        
+        # Ask for confirmation
+        print("\n" + "="*50)
+        print("READY TO EXECUTE BUYBACKS:")
+        print(f"1. Buy {source_buyback:.6f} ETH of ${token_symbol} → Hold (pump chart)")
+        print(f"2. Buy {dok_buyback:.6f} ETH of $DOK → Hold (pump chart)")
+        print(f"3. Keep {treasury:.6f} ETH in treasury")
+        print("="*50)
+        
+        response = input("\n⚠️  Execute buybacks? (yes/no): ").lower()
+        
+        if response != 'yes':
+            print("\n⏭️  Skipping execution")
+            conn.close()
+            return
+        
+        # Step 4: Execute buybacks
+        print("\nStep 4: Executing buybacks...")
+        
+        # Record the fee claim as processing
+        conn.execute('''
+            INSERT INTO fee_claims 
+            (token_address, token_symbol, token_name, pool_address, 
+             claimed_amount, buyback_amount, incentive_amount, dev_amount,
+             claim_tx_hash, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'processing')
+        ''', (token_address, token_symbol, token_name, decoded.get('pool_address'),
+              value, source_buyback, dok_buyback, treasury,
+              tx_hash))
+        conn.commit()
+        
+        # Execute source token buyback
+        print(f"\n🔄 Buying ${token_symbol}...")
+        source_result = await factory_interface.execute_token_buyback(
+            token_address, 
+            source_buyback
+            # Will automatically hold in our wallet
+        )
+        
+        if source_result['success']:
+            print(f"✅ ${token_symbol} buyback successful!")
+            print(f"   TX: {source_result['tx_hash']}")
+        else:
+            print(f"❌ ${token_symbol} buyback failed: {source_result.get('error', 'Unknown error')}")
+        
+        # Execute DOK buyback
+        print(f"\n🔄 Buying $DOK...")
+        dok_result = await factory_interface.execute_dok_buyback_v3(dok_buyback, tx_hash)
+        
+        if dok_result['success']:
+            print(f"✅ $DOK buyback successful!")
+            print(f"   TX: {dok_result['tx_hash']}")
+            print(f"   DOK bought: {dok_result.get('dok_amount', 0):,.2f} (now holding)")
+        else:
+            print(f"❌ $DOK buyback failed: {dok_result.get('error', 'Unknown error')}")
+        
+        # Update database with results
+        if source_result['success'] and dok_result['success']:
+            status = 'completed'
+        elif source_result['success'] or dok_result['success']:
+            status = 'partial'
+        else:
+            status = 'failed'
+        
+        # Update the fee claim record
+        conn.execute('''
+            UPDATE fee_claims 
+            SET status = ?,
+                buyback_tx_hash = ?,
+                buyback_dok_amount = ?
+            WHERE claim_tx_hash = ?
+        ''', (status, 
+              source_result.get('tx_hash', ''),
+              dok_result.get('dok_amount', 0),
+              tx_hash))
+        
+        # Record treasury amount in balance_sources
+        conn.execute('''
+            INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+            VALUES ('fee_detection', ?, ?, ?)
+        ''', (treasury, tx_hash, f"Treasury from ${token_symbol} fees"))
+        
+        conn.commit()
+        conn.close()
+        
+        # Final summary
+        print("\n" + "="*50)
+        print("PIPELINE COMPLETE!")
+        print("="*50)
+        print(f"Status: {status.upper()}")
+        print(f"Source token buyback: {'✅' if source_result['success'] else '❌'}")
+        print(f"DOK buyback: {'✅' if dok_result['success'] else '❌'}")
+        print(f"Treasury secured: {treasury:.6f} ETH")
+        
+        if source_result['success']:
+            print(f"\n${token_symbol} buyback: https://etherscan.io/tx/{source_result['tx_hash']}")
+        if dok_result['success']:
+            print(f"$DOK buyback: https://etherscan.io/tx/{dok_result['tx_hash']}")
+            
+    except Exception as e:
+        print(f"\n❌ Pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
+
+async def debug_transaction():
+    """Debug a specific transaction to understand the data"""
+    print("\n🔍 Debug Transaction")
+    print("="*50)
+    
+    tx_hash = input("Enter transaction hash to debug (or press Enter for default): ").strip()
+    if not tx_hash:
+        tx_hash = "0x07469be8b6441e959795fdc61c91ba29d0116d5323bf3690571a57514485494a"
+    
+    print(f"\nChecking transaction: {tx_hash}")
+    
+    try:
+        # Get transaction
+        tx = w3.eth.get_transaction(tx_hash)
+        receipt = w3.eth.get_transaction_receipt(tx_hash)
+        
+        print(f"\nTransaction details:")
+        print(f"   From: {tx['from']}")
+        print(f"   To: {tx['to']}")
+        print(f"   Value: {w3.from_wei(tx['value'], 'ether')} ETH")
+        print(f"   Input data: {tx['input'][:66]}...")
+        
+        # Check logs
+        print(f"\nLogs ({len(receipt['logs'])} total):")
+        for i, log in enumerate(receipt['logs'][:5]):  # Show first 5 logs
+            print(f"\nLog {i}:")
+            print(f"   Address: {log['address']}")
+            print(f"   Topics: {len(log['topics'])}")
+            if log['topics']:
+                print(f"   Topic 0: {log['topics'][0].hex()}")
+            
+            # Check if this is a Transfer event
+            if log['topics'] and log['topics'][0].hex() == '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef':
+                print("   ✅ This is a Transfer event")
+                if len(log['topics']) >= 3:
+                    from_addr = '0x' + log['topics'][1].hex()[-40:]
+                    to_addr = '0x' + log['topics'][2].hex()[-40:]
+                    print(f"   From: {from_addr}")
+                    print(f"   To: {to_addr}")
+        
+        # Try to decode as factory call
+        print("\nTrying to decode as collectFees call...")
+        from klik_factory_interface import FACTORY_ABI
+        factory_contract = w3.eth.contract(address=KLIK_FACTORY, abi=FACTORY_ABI)
+        
+        try:
+            decoded = factory_contract.decode_function_input(tx['input'])
+            print(f"✅ Decoded successfully!")
+            print(f"   Function: {decoded[0].fn_name}")
+            print(f"   Parameters: {decoded[1]}")
+        except Exception as e:
+            print(f"❌ Could not decode: {e}")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+if __name__ == "__main__":
+    print("Choose an option:")
+    print("1. Detect incoming fee claims")
+    print("2. Test buyback split logic")
+    print("3. Test small DOK buyback (0.01 ETH)")
+    print("4. Process single fee claim (FULL PIPELINE)")
+    print("5. Debug transaction")
+    
+    choice = input("\nEnter choice (1-5): ")
+    
+    if choice == "1":
+        asyncio.run(detect_incoming_fee_claims())
+    elif choice == "2":
+        asyncio.run(test_buyback_split())
+    elif choice == "3":
+        asyncio.run(test_small_dok_buyback())
+    elif choice == "4":
+        asyncio.run(process_single_fee_claim())
+    elif choice == "5":
+        asyncio.run(debug_transaction())
+    else:
+        print("Invalid choice!") 
