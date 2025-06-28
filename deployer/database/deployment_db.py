@@ -577,6 +577,28 @@ class DeploymentDatabase:
             
             return cursor.fetchall()
     
+    def get_recent_deployments_with_addresses(self, username: str, days: int = 7) -> List[Tuple[str, str, datetime]]:
+        """Get user's recent successful deployments with addresses
+        
+        Returns:
+            List of (token_symbol, token_address, deployed_at) tuples
+        """
+        since = datetime.now() - timedelta(days=days)
+        
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+            cursor = conn.execute('''
+                SELECT token_symbol, token_address, deployed_at 
+                FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at > ? 
+                AND status = 'success' 
+                AND token_address IS NOT NULL
+                ORDER BY deployed_at DESC 
+                LIMIT 10
+            ''', (username, since))
+            
+            return cursor.fetchall()
+    
     def cleanup_expired_cooldowns(self) -> int:
         """Clean up expired cooldowns and fix any incorrect cooldown periods
         

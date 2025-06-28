@@ -2037,18 +2037,50 @@ Learn the rules: t.me/DeployOnKlik"""
                     cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
                     days = cooldown_match.group(1) if cooldown_match else "7"
                     
-                    # Get their recent deployments to show
-                    recent_deploys = self.db.get_recent_deployments(username, days=7)
+                    # Get their recent deployments to show WITH ADDRESSES
+                    recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
+                    
                     if recent_deploys:
-                        deploy_list = ", ".join([f"${d[0]}" for d in recent_deploys[:3]])
-                        reply_text = f"""@{username} Weekly limit reached! (3 free/week)
+                        # Show actual deployments (may be less than 3 if some failed or were deleted)
+                        actual_count = len(recent_deploys)
+                        deploys_to_show = recent_deploys[:3]  # Show up to 3
+                        
+                        # Check if we can fit full DexScreener links
+                        if len(deploys_to_show) <= 2:
+                            # For 1-2 deployments, we can show full DexScreener links
+                            deploy_lines = []
+                            for symbol, address, _ in deploys_to_show:
+                                if address:
+                                    deploy_lines.append(f"${symbol}: dexscreener.com/ethereum/{address}")
+                                else:
+                                    deploy_lines.append(f"${symbol}")
+                            
+                            deploy_text = "\n".join(deploy_lines)
+                            reply_text = f"""@{username} Weekly limit reached! ({actual_count}/3 used)
 
-This week: {deploy_list}
+{deploy_text}
+
 Wait {days} days OR:
-💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Hold 5M+ $DOK for 10/week"""
+💰 Deposit: t.me/DeployOnKlik
+🎯 Hold $DOK for 10/week"""
+                        else:
+                            # For 3 deployments, use shortened format
+                            deploy_info = []
+                            for symbol, address, _ in deploys_to_show:
+                                if address:
+                                    short_addr = address[:8] if len(address) > 8 else address
+                                    deploy_info.append(f"${symbol} ({short_addr}...)")
+                                else:
+                                    deploy_info.append(f"${symbol}")
+                            
+                            deploy_list = " | ".join(deploy_info)
+                            reply_text = f"""@{username} Weekly limit reached! (3/3 used)
+
+{deploy_list}
+
+Wait {days} days OR deposit: t.me/DeployOnKlik"""
                     else:
-                        # Fallback if no deployments found
+                        # No deployments found but hit limit (shouldn't happen)
                         reply_text = f"""@{username} Weekly limit reached! (3 free/week)
 
 Wait {days} days OR:
@@ -2076,18 +2108,38 @@ Deposit ETH for any gas: t.me/DeployOnKlik"""
 You have: {follower_count}
 Or deposit ETH: t.me/DeployOnKlik"""
             elif "already used your free deployment" in instructions or "already deployed" in instructions:
-                # Get user's last deployment to show them
-                last_deployment = self.db.get_last_successful_deployment(username)
+                # Get user's recent deployments to show what they've deployed
+                recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
                 
-                if last_deployment:
-                    token_symbol, token_address = last_deployment
-                    reply_text = f"""@{username} You already deployed ${token_symbol}! (~3/week limit)
+                if recent_deploys:
+                    # Show their recent deployments with links
+                    if len(recent_deploys) == 1:
+                        # Single deployment - show full DexScreener link
+                        symbol, address, _ = recent_deploys[0]
+                        reply_text = f"""@{username} You already deployed ${symbol}!
 
-📈 dexscreener.com/ethereum/{token_address}
+📈 dexscreener.com/ethereum/{address}
 
-Want more?
-💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Hold 5M+ $DOK for 10/week"""
+Want more? (3/week limit)
+💰 Deposit: t.me/DeployOnKlik
+🎯 Hold $DOK for 10/week"""
+                    else:
+                        # Multiple deployments - show compact list
+                        deploy_count = len(recent_deploys[:3])
+                        deploy_info = []
+                        for symbol, address, _ in recent_deploys[:3]:
+                            if address:
+                                short_addr = address[:8]
+                                deploy_info.append(f"${symbol} ({short_addr}...)")
+                            else:
+                                deploy_info.append(f"${symbol}")
+                        
+                        deploy_list = " | ".join(deploy_info)
+                        reply_text = f"""@{username} Already deployed {deploy_count} this week!
+
+{deploy_list}
+
+Limit: 3/week | Deposit: t.me/DeployOnKlik"""
                 else:
                     # Fallback if no deployment found
                     reply_text = f"""@{username} Free deploy already used! (~3/week limit)
