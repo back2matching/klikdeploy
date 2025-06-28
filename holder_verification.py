@@ -73,8 +73,11 @@ def check_holder_status(wallet_address: str) -> tuple[bool, float, float]:
             logger.error(f"Invalid address: {wallet_address}")
             return False, 0, 0
         
+        # Convert to checksum address (required by Web3.py)
+        checksum_address = w3.to_checksum_address(wallet_address)
+        
         # Get token balance
-        balance_raw = dok_token.functions.balanceOf(wallet_address).call()
+        balance_raw = dok_token.functions.balanceOf(checksum_address).call()
         
         # Get decimals (should be 18 for standard tokens)
         decimals = dok_token.functions.decimals().call()
@@ -88,7 +91,7 @@ def check_holder_status(wallet_address: str) -> tuple[bool, float, float]:
         # Check if holder
         is_holder = balance >= MIN_HOLDER_AMOUNT
         
-        logger.info(f"Wallet {wallet_address}: {balance:,.2f} DOK ({percentage:.4f}% of supply) - Holder: {is_holder}")
+        logger.info(f"Wallet {checksum_address}: {balance:,.2f} DOK ({percentage:.4f}% of supply) - Holder: {is_holder}")
         
         return is_holder, balance, percentage
         
