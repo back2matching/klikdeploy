@@ -1642,11 +1642,7 @@ async def credit_failed_deployment(username: str, amount: float, tx_hash: str):
 # Import actual contract interface functions
 from klik_factory_interface import (
     # Only import what we need for deposits
-    execute_dok_buyback,
-    # Deprecated functions kept for backward compatibility
-    get_pool_address,
-    check_claimable_fees,
-    claim_fees_from_pool
+    execute_dok_buyback
 )
 
 async def manual_credit_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
