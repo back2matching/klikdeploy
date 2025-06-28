@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 # Contract addresses
 KLIK_FACTORY = "0x930f9FA91E1E46d8e44abC3517E2965C6F9c4763"
 UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
-UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"  # V2 router for DOK
+UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"  # V2 router fallback
+UNIVERSAL_ROUTER = "0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"  # Universal Router for V2/V3/V4
 WETH_ADDRESS = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 DOK_ADDRESS = "0x69ca61398eCa94D880393522C1Ef5c3D8c058837"
 BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD"  # Not used anymore - we hold tokens instead
@@ -107,6 +108,32 @@ UNISWAP_V2_ROUTER_ABI = [
     }
 ]
 
+# Uniswap V3 Router ABI (SwapRouter)
+UNISWAP_V3_ROUTER_ABI = [
+    {
+        "inputs": [
+            {
+                "components": [
+                    {"name": "tokenIn", "type": "address"},
+                    {"name": "tokenOut", "type": "address"},
+                    {"name": "fee", "type": "uint24"},
+                    {"name": "recipient", "type": "address"},
+                    {"name": "deadline", "type": "uint256"},
+                    {"name": "amountIn", "type": "uint256"},
+                    {"name": "amountOutMinimum", "type": "uint256"},
+                    {"name": "sqrtPriceLimitX96", "type": "uint160"}
+                ],
+                "name": "params",
+                "type": "tuple"
+            }
+        ],
+        "name": "exactInputSingle",
+        "outputs": [{"name": "amountOut", "type": "uint256"}],
+        "stateMutability": "payable",
+        "type": "function"
+    }
+]
+
 # Pair ABI to check reserves
 PAIR_ABI = [
     {
@@ -153,6 +180,21 @@ ERC20_ABI = [
     }
 ]
 
+# Universal Router ABI (minimal for swaps)
+UNIVERSAL_ROUTER_ABI = [
+    {
+        "inputs": [
+            {"name": "commands", "type": "bytes"},
+            {"name": "inputs", "type": "bytes[]"},
+            {"name": "deadline", "type": "uint256"}
+        ],
+        "name": "execute",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    }
+]
+
 class KlikFactoryInterface:
     """Interface for Klik Factory contract interactions"""
     
@@ -165,6 +207,7 @@ class KlikFactoryInterface:
         # Initialize contracts
         self.factory = self.w3.eth.contract(address=KLIK_FACTORY, abi=FACTORY_ABI)
         self.router_v2 = self.w3.eth.contract(address=UNISWAP_V2_ROUTER, abi=UNISWAP_V2_ROUTER_ABI)
+        self.router_v3 = self.w3.eth.contract(address=UNISWAP_V3_ROUTER, abi=UNISWAP_V3_ROUTER_ABI)
     
     async def analyze_fee_claim_transaction(self, tx_hash: str) -> Dict:
         """Analyze a fee claim transaction to understand the mapping"""
@@ -575,83 +618,24 @@ class KlikFactoryInterface:
             return 0.00008  # ~$0.20 at $2500 ETH
     
     async def execute_dok_buyback_v3(self, amount_eth: float, reference_tx: str) -> Dict:
-        """Execute DOK buyback on Uniswap V3 and hold in our wallet"""
+        """Execute DOK buyback and hold in our wallet"""
         try:
-            amount_wei = self.w3.to_wei(amount_eth, 'ether')
+            # Simply use the general buyback method which now supports V3
+            result = await self.execute_token_buyback(DOK_ADDRESS, amount_eth)
             
-            # For V3, we need to use the Universal Router or SwapRouter
-            # For simplicity, let's use V2 router which also works
-            # Get current DOK price to calculate min output
-            dok_price = await self.get_dok_price_v3()
-            expected_dok = amount_eth / dok_price
-            min_dok_out = int(expected_dok * 0.97 * 1e18)  # 3% slippage
-            
-            # Prepare swap path
-            path = [WETH_ADDRESS, DOK_ADDRESS]
-            deadline = int(self.w3.eth.get_block('latest')['timestamp']) + 300  # 5 minutes
-            
-            logger.info(f"Executing buyback: {amount_eth} ETH for ~{expected_dok:,.0f} DOK")
-            
-            # Build swap transaction
-            function_call = self.router_v2.functions.swapExactETHForTokens(
-                min_dok_out,
-                path,
-                self.account.address,  # Send to our wallet to hold
-                deadline
-            )
-            
-            # Get gas estimate
-            gas_estimate = function_call.estimate_gas({
-                'from': self.account.address,
-                'value': amount_wei
-            })
-            
-            nonce = self.w3.eth.get_transaction_count(self.account.address)
-            gas_price = self.w3.eth.gas_price
-            
-            tx = function_call.build_transaction({
-                'from': self.account.address,
-                'value': amount_wei,
-                'gas': int(gas_estimate * 1.2),  # 20% buffer
-                'gasPrice': gas_price,
-                'nonce': nonce,
-                'chainId': self.w3.eth.chain_id
-            })
-            
-            # Sign and send
-            signed_tx = self.account.sign_transaction(tx)
-            tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-            
-            # Wait for confirmation
-            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
-            
-            if receipt['status'] == 1:
-                # Try to get actual DOK amount from logs
-                actual_dok = expected_dok  # Default to expected
-                
-                # Check burn address balance increase (more accurate)
+            if result['success']:
+                # Try to estimate DOK amount from price
                 try:
-                    dok_contract = self.w3.eth.contract(address=DOK_ADDRESS, abi=ERC20_ABI)
-                    # Note: This is approximate as other burns might happen
-                    actual_dok = expected_dok
+                    dok_price = await self.get_dok_price_v3()
+                    expected_dok = amount_eth / dok_price
+                    result['dok_amount'] = expected_dok
                 except:
-                    pass
-                
-                logger.info(f"Successfully bought {actual_dok:,.0f} DOK (now holding): {tx_hash.hex()}")
-                
-                return {
-                    'success': True,
-                    'tx_hash': tx_hash.hex(),
-                    'dok_amount': actual_dok
-                }
-            else:
-                return {
-                    'success': False,
-                    'error': 'Transaction failed'
-                }
+                    result['dok_amount'] = 0
+                    
+            return result
                 
         except Exception as e:
-            logger.error(f"Buyback failed: {e}")
+            logger.error(f"DOK buyback failed: {e}")
             return {
                 'success': False,
                 'error': str(e)
@@ -806,75 +790,81 @@ class KlikFactoryInterface:
             if destination_address is None:
                 destination_address = self.account.address
             
-            # Check if it's DOK - use existing method
-            if token_address.lower() == DOK_ADDRESS.lower():
-                return await self.execute_dok_buyback_v3(amount_eth, "auto_buyback")
+            # Don't call execute_dok_buyback_v3 here to avoid recursion
+            # Just continue with the normal flow for all tokens including DOK
             
-            # For other tokens, we need to find their pool and router
-            # First check if there's a V2 pool
-            path = [WETH_ADDRESS, token_address]
             deadline = int(self.w3.eth.get_block('latest')['timestamp']) + 300
             
             logger.info(f"Executing buyback: {amount_eth} ETH for {token_address}")
             
-            # Try V2 router
-            try:
-                # Build swap transaction
-                function_call = self.router_v2.functions.swapExactETHForTokens(
-                    0,  # Accept any amount of tokens (we'll hold anyway)
-                    path,
-                    destination_address,
-                    deadline
-                )
-                
-                # Get gas estimate
-                gas_estimate = function_call.estimate_gas({
-                    'from': self.account.address,
-                    'value': amount_wei
-                })
-                
-                nonce = self.w3.eth.get_transaction_count(self.account.address)
-                gas_price = self.w3.eth.gas_price
-                
-                tx = function_call.build_transaction({
-                    'from': self.account.address,
-                    'value': amount_wei,
-                    'gas': int(gas_estimate * 1.2),
-                    'gasPrice': gas_price,
-                    'nonce': nonce,
-                    'chainId': self.w3.eth.chain_id
-                })
-                
-                # Sign and send
-                signed_tx = self.account.sign_transaction(tx)
-                tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-                
-                # Wait for confirmation
-                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
-                
-                if receipt['status'] == 1:
-                    logger.info(f"Successfully bought token {token_address} (now holding): {tx_hash.hex()}")
-                    
-                    return {
-                        'success': True,
-                        'tx_hash': tx_hash.hex(),
-                        'token_address': token_address,
-                        'amount_eth': amount_eth,
-                        'destination': destination_address
-                    }
-                else:
-                    return {
-                        'success': False,
-                        'error': 'Transaction failed'
+            # Try V3 first since all Klik tokens use V3
+            logger.info("Trying V3 swap...")
+            
+            for fee in [10000, 3000, 500]:  # Try 1%, 0.3%, 0.05% fee tiers
+                try:
+                    # Build V3 swap params
+                    swap_params = {
+                        'tokenIn': WETH_ADDRESS,
+                        'tokenOut': token_address,
+                        'fee': fee,
+                        'recipient': destination_address,
+                        'deadline': deadline,
+                        'amountIn': amount_wei,
+                        'amountOutMinimum': 0,  # Accept any amount
+                        'sqrtPriceLimitX96': 0  # No price limit
                     }
                     
-            except Exception as e:
-                logger.error(f"V2 buyback failed, token might not have liquidity: {e}")
-                # Could try V3 or other DEXs here
-                return {
-                    'success': False,
-                    'error': f'No liquidity found: {str(e)}'
-                }
+                    function_call = self.router_v3.functions.exactInputSingle(swap_params)
+                    
+                    # Get gas estimate
+                    gas_estimate = function_call.estimate_gas({
+                        'from': self.account.address,
+                        'value': amount_wei
+                    })
+                    
+                    logger.info(f"V3 pool found with {fee/100}% fee tier")
+                    
+                    nonce = self.w3.eth.get_transaction_count(self.account.address)
+                    gas_price = self.w3.eth.gas_price
+                    
+                    tx = function_call.build_transaction({
+                        'from': self.account.address,
+                        'value': amount_wei,
+                        'gas': int(gas_estimate * 1.2),
+                        'gasPrice': gas_price,
+                        'nonce': nonce,
+                        'chainId': self.w3.eth.chain_id
+                    })
+                    
+                    # Sign and send
+                    signed_tx = self.account.sign_transaction(tx)
+                    tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                    
+                    # Wait for confirmation
+                    receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
+                    
+                    if receipt['status'] == 1:
+                        logger.info(f"Successfully bought token {token_address} via V3 (now holding): {tx_hash.hex()}")
+                        
+                        return {
+                            'success': True,
+                            'tx_hash': tx_hash.hex(),
+                            'token_address': token_address,
+                            'amount_eth': amount_eth,
+                            'destination': destination_address,
+                            'router': 'V3',
+                            'fee_tier': fee
+                        }
+                    
+                except Exception as e:
+                    logger.warning(f"V3 swap failed with {fee/100}% fee: {str(e)}")
+                    continue
+            
+            # All V3 fee tiers failed
+            return {
+                'success': False,
+                'error': 'No liquidity found on V3 - token might not have a pool yet'
+            }
                 
         except Exception as e:
             logger.error(f"Buyback failed: {e}")

@@ -98,7 +98,10 @@ class KlikTokenDeployer:
         
         print("🚀 KLIK FINANCE TWITTER DEPLOYER v2.0")
         print("=" * 50)
-        print("💰 Deploy tokens for FREE via Twitter mentions")
+        print("💰 Deploy tokens via Twitter mentions")
+        print("📋 FREE Tier: 500+ followers, 2 deploys/week ≤2 gwei")
+        print("🌟 VIP Tier: 20k+ followers, 2 deploys/week ≤6 gwei")
+        print("🎯 HOLDER: 5M+ $DOK, 3 deploys/week ≤15 gwei")
         print("🖼️  Auto-attach images from parent tweets")
         print("🔗 Auto-link to deployment tweet")
         print("📦 Queue System: ENABLED (max 10 pending)")
@@ -474,7 +477,7 @@ class KlikTokenDeployer:
         likely_gas_gwei = current_gas_gwei
         
         # Get gas limits from config - updated for new tiers
-        free_gas_limit = float(os.getenv('FREE_DEPLOY_GAS_LIMIT', '3'))
+        free_gas_limit = float(os.getenv('FREE_DEPLOY_GAS_LIMIT', '2'))
         vip_gas_limit = float(os.getenv('VIP_DEPLOY_GAS_LIMIT', '6'))  # VIP FREE up to 6 gwei
         holder_gas_limit = float(os.getenv('HOLDER_MAX_GAS_LIMIT', '15'))  # Reduced from 50 to 15
         
@@ -542,7 +545,7 @@ class KlikTokenDeployer:
         gas_limit_for_user = vip_gas_limit if is_vip else free_gas_limit
         
         # Minimum follower count for FREE deployments
-        min_followers_for_free = int(os.getenv('MIN_FOLLOWER_COUNT', '1500'))
+        min_followers_for_free = int(os.getenv('MIN_FOLLOWER_COUNT', '500'))
         
         # Check progressive cooldown for non-holders before allowing free deployment
         if not is_holder and not (user_balance >= total_cost):  # Only for users seeking free deployment
@@ -565,16 +568,16 @@ class KlikTokenDeployer:
 📈 dexscreener.com/ethereum/{token_address}
 
 Next free deploy: {cooldown_days} days
-~1 free deploy per week
+~2 free deploys per week
 
 Want to deploy NOW? 
 💰 Deposit ETH: t.me/DeployOnKlik
 🎯 Or hold 5M+ $DOK for 3/week"""
                         else:
-                            return False, f"""⏳ COOLDOWN: You used your FREE deploy this week!
+                            return False, f"""⏳ COOLDOWN: You used your FREE deploys this week!
 
 Next free deploy: {cooldown_days} days
-New limit: ~1 free deploy per week
+New limit: ~2 free deploys per week
 
 Want to deploy NOW? 
 💰 Deposit ETH: t.me/DeployOnKlik
@@ -583,7 +586,7 @@ Want to deploy NOW?
                         return False, f"""⏳ COOLDOWN: Back-to-back deployments detected!
 
 Wait: {cooldown_days} days
-New limit: ~1 free deploy per week
+New limit: ~2 free deploys per week
 
 Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
@@ -633,15 +636,15 @@ Deposit to deploy now: t.me/DeployOnKlik"""
 
 📈 dexscreener.com/ethereum/{token_address}
 
-New limit: ~1 free deploy per week
+New limit: ~2 free deploys per week
 
 Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
 🎯 Or hold 5M+ $DOK for 3/week"""
                 else:
-                    return False, f"""🚫 You've already used your free deployment!
+                    return False, f"""🚫 You've already used your free deployments!
 
-New limit: ~1 free deploy per week
+New limit: ~2 free deploys per week
 
 Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
@@ -712,8 +715,8 @@ Quick & easy deposits!"""
             user_balance = self.get_user_balance(request.username)
             
             # Determine deployment type - MUST match rate limit logic!
-            gas_limit_for_user = 6 if request.follower_count >= 20000 else 3  # 20k+ followers get 6 gwei limit
-            min_followers_for_free = int(os.getenv('MIN_FOLLOWER_COUNT', '1500'))
+            gas_limit_for_user = 6 if request.follower_count >= 20000 else 2  # 20k+ followers get 6 gwei limit
+            min_followers_for_free = int(os.getenv('MIN_FOLLOWER_COUNT', '500'))
             
             # Check if qualifies for free deployment
             if likely_gas_gwei <= gas_limit_for_user and request.follower_count >= min_followers_for_free and not is_holder:
@@ -1995,7 +1998,7 @@ Please try again in a few minutes ⏳
 Status: t.me/DeployOnKlik"""
             elif "COOLDOWN" in instructions:
                 # Handle new progressive cooldown messages
-                if "You used your FREE deploy this week" in instructions or "You already deployed" in instructions:
+                if "You used your FREE deploys this week" in instructions or "You already deployed" in instructions:
                     # Extract token info from the instructions if available
                     token_match = re.search(r'already deployed \$(\w+)!', instructions)
                     dexscreener_match = re.search(r'dexscreener\.com/ethereum/(0x[a-fA-F0-9]{40})', instructions)
@@ -2034,7 +2037,7 @@ Wait {days} days OR:
 🎯 Hold 5M+ $DOK for 3/week"""
                 else:
                     # Generic cooldown message
-                    reply_text = f"""@{username} Cooldown active! (~1 free/week limit)
+                    reply_text = f"""@{username} Cooldown active! (~2 free/week limit)
 
 Skip cooldown:
 💰 Deposit ETH: t.me/DeployOnKlik
@@ -2044,12 +2047,12 @@ Skip cooldown:
                 gas_value = gas_match.group(1) if gas_match else "high"
                 reply_text = f"""@{username} Gas too high! ({gas_value} gwei)
 
-Free tier: ≤3 gwei only
+Free tier: ≤2 gwei only
 Deposit ETH for any gas: t.me/DeployOnKlik"""
             elif "Not enough followers" in instructions:
                 followers_match = re.search(r'You have: ([\d,]+) followers', instructions)
                 follower_count = followers_match.group(1) if followers_match else "?"
-                reply_text = f"""@{username} Need 1,500+ followers for free deploys!
+                reply_text = f"""@{username} Need 500+ followers for free deploys!
 
 You have: {follower_count}
 Or deposit ETH: t.me/DeployOnKlik"""
@@ -2059,7 +2062,7 @@ Or deposit ETH: t.me/DeployOnKlik"""
                 
                 if last_deployment:
                     token_symbol, token_address = last_deployment
-                    reply_text = f"""@{username} You already deployed ${token_symbol}! (~1/week limit)
+                    reply_text = f"""@{username} You already deployed ${token_symbol}! (~2/week limit)
 
 📈 dexscreener.com/ethereum/{token_address}
 
@@ -2068,7 +2071,7 @@ Want more?
 🎯 Hold 5M+ $DOK for 3/week"""
                 else:
                     # Fallback if no deployment found
-                    reply_text = f"""@{username} Free deploy already used! (~1/week limit)
+                    reply_text = f"""@{username} Free deploy already used! (~2/week limit)
 
 Want more?
 💰 Deposit ETH: t.me/DeployOnKlik
