@@ -437,38 +437,24 @@ class KlikTokenDeployer:
             avg_gas_used_ratio = sum(gas_used_ratios) / len(gas_used_ratios) if gas_used_ratios else 0.5
             
             # Determine network state and optimal parameters
+            # ALWAYS cap priority fees to reasonable levels!
+            min_priority = self.w3.to_wei(self.min_priority_fee_gwei, 'gwei')
+            max_priority = self.w3.to_wei(self.max_priority_fee_gwei, 'gwei')
+            
             if avg_gas_used_ratio < 0.5:
-                # Low congestion - be aggressive with pricing
-                if priority_fees:
-                    # Use 25th percentile of priority fees
-                    priority_fees.sort()
-                    percentile_25 = priority_fees[len(priority_fees) // 4]
-                    max_priority_fee = max(percentile_25, self.w3.to_wei(0.1, 'gwei'))
-                else:
-                    max_priority_fee = self.w3.to_wei(self.min_priority_fee_gwei, 'gwei')
-                base_multiplier = 1.05 if self.aggressive_gas_optimization else 1.08  # 5% or 8% buffer
+                # Low congestion - minimal priority fee
+                max_priority_fee = min_priority  # Just use minimum (0.1 gwei)
+                base_multiplier = 1.05 if self.aggressive_gas_optimization else 1.08
                 
             elif avg_gas_used_ratio < 0.8:
-                # Medium congestion
-                if priority_fees:
-                    # Use median priority fee
-                    priority_fees.sort()
-                    median_priority = priority_fees[len(priority_fees) // 2]
-                    max_priority_fee = max(median_priority, self.w3.to_wei(0.5, 'gwei'))
-                else:
-                    max_priority_fee = self.w3.to_wei(0.5, 'gwei')
-                base_multiplier = 1.1  # 10% buffer
+                # Medium congestion - slightly higher but still low
+                max_priority_fee = self.w3.to_wei(0.5, 'gwei')  # Fixed 0.5 gwei
+                base_multiplier = 1.1
                 
             else:
-                # High congestion - use conservative settings
-                if priority_fees:
-                    # Use 75th percentile
-                    priority_fees.sort()
-                    percentile_75 = priority_fees[3 * len(priority_fees) // 4]
-                    max_priority_fee = min(percentile_75, self.w3.to_wei(2, 'gwei'))
-                else:
-                    max_priority_fee = self.w3.to_wei(min(1, self.max_priority_fee_gwei), 'gwei')
-                base_multiplier = 1.15 if self.aggressive_gas_optimization else 1.2  # 15% or 20% buffer
+                # High congestion - cap at max setting (now 0.5 gwei max)
+                max_priority_fee = max_priority  # Cap at configured max
+                base_multiplier = 1.15 if self.aggressive_gas_optimization else 1.2
             
             # Calculate max fee
             max_fee_per_gas = int(base_fee * base_multiplier) + max_priority_fee
@@ -629,8 +615,10 @@ class KlikTokenDeployer:
         # Calculate total cost
         # Bot owner doesn't pay fees on their own deployments!
         is_bot_owner = username.lower() == self.bot_username.lower()
-        fee = 0 if (is_holder or is_bot_owner) else 0.01  # Holders and bot owner pay no fee
-        total_cost = realistic_gas_cost + fee
+        # Fee only applies to pay-per-deploy, NOT free deployments!
+        # And holders/bot owner never pay fees even on pay-per-deploy
+        fee = 0  # Will be calculated properly based on deployment type later
+        total_cost = realistic_gas_cost + fee  # For now, just gas cost
         
         # Get user balance
         user_balance = self.get_user_balance(username)
@@ -658,13 +646,17 @@ class KlikTokenDeployer:
         min_followers_for_free = int(os.getenv('MIN_FOLLOWER_COUNT', '250'))
         
         # Check progressive cooldown for non-holders before allowing free deployment
-        if not is_holder and not (user_balance >= total_cost):  # Only for users seeking free deployment
+        if not is_holder and not (user_balance >= realistic_gas_cost):  # Only for users seeking free deployment
             can_deploy_free, cooldown_msg, cooldown_days = self.check_progressive_cooldown(username)
             if not can_deploy_free:
                 # User is in progressive cooldown
-                if user_balance >= total_cost:
+                # Calculate pay-per-deploy cost with fee
+                cooldown_fee = 0 if is_bot_owner else 0.01
+                cooldown_total = realistic_gas_cost + cooldown_fee
+                
+                if user_balance >= cooldown_total:
                     # They can still pay to deploy
-                    return True, f"💰 Pay-per-deploy ({cooldown_msg.lower()}. Cost: {total_cost:.4f} ETH)"
+                    return True, f"💰 Pay-per-deploy ({cooldown_msg.lower()}. Cost: {cooldown_total:.4f} ETH)"
                 else:
                     # Cannot deploy at all - now with relaxed cooldowns
                     if cooldown_days >= 30:
@@ -699,22 +691,30 @@ Want to deploy NOW?
             # Check follower count for free deployments
             if follower_count < min_followers_for_free and not is_holder:
                 # Not enough followers for free deployment, check if they can pay
-                if user_balance >= total_cost:
-                    return True, f"💰 Pay-per-deploy (cost: {total_cost:.4f} ETH, balance: {user_balance:.4f} ETH)"
+                # Calculate pay-per-deploy cost with fee
+                follower_fee = 0 if is_bot_owner else 0.01
+                follower_total = realistic_gas_cost + follower_fee
+                
+                if user_balance >= follower_total:
+                    return True, f"💰 Pay-per-deploy (cost: {follower_total:.4f} ETH, balance: {user_balance:.4f} ETH)"
                 else:
                     return False, f"""❌ Not enough followers for free deployment!
 
 You have: {follower_count:,} followers
 Need: {min_followers_for_free:,} followers for free deploys
 
-💰 Or deposit {total_cost:.4f} ETH to deploy now:
+💰 Or deposit {follower_total:.4f} ETH to deploy now:
 t.me/DeployOnKlik"""
             
             # SAFETY: Check if bot has enough balance for free deployments
             if available_bot_balance_for_free < realistic_gas_cost * 1.1:
                 # Bot doesn't have enough balance for free deployment
-                if user_balance >= total_cost:
-                    return True, f"💰 Pay-per-deploy (bot low on funds - cost: {total_cost:.4f} ETH, your balance: {user_balance:.4f} ETH)"
+                # Calculate pay-per-deploy cost with fee
+                bot_low_fee = 0 if (is_holder or is_bot_owner) else 0.01
+                bot_low_total = realistic_gas_cost + bot_low_fee
+                
+                if user_balance >= bot_low_total:
+                    return True, f"💰 Pay-per-deploy (bot low on funds - cost: {bot_low_total:.4f} ETH, your balance: {user_balance:.4f} ETH)"
                 else:
                     return False, f"""❌ Bot balance too low for free deployment!
 
@@ -765,8 +765,11 @@ Please wait for gas to drop or visit t.me/DeployOnKlik"""
             # SAFETY: Check if bot has enough balance for holder deployments
             if available_bot_balance_for_free < realistic_gas_cost * 1.1:
                 # Bot doesn't have enough balance for holder deployment
-                if user_balance >= total_cost:
-                    return True, f"💰 Pay-per-deploy (bot low on funds - cost: {total_cost:.4f} ETH, your balance: {user_balance:.4f} ETH)"
+                # Holders never pay fees, even on pay-per-deploy
+                holder_low_total = realistic_gas_cost  # No fee for holders
+                
+                if user_balance >= holder_low_total:
+                    return True, f"💰 Pay-per-deploy (bot low on funds - cost: {holder_low_total:.4f} ETH, your balance: {user_balance:.4f} ETH)"
                 else:
                     return False, f"""❌ Bot balance too low for holder deployment!
 
@@ -780,13 +783,17 @@ Deposit more: t.me/DeployOnKlik"""
                 return False, f"🎯 Holder weekly limit reached (10/10 used). Thank you for supporting $KLIK!"
         
         # Tier 3: Pay per deploy (check balance)
-        if user_balance >= total_cost:
-            return True, f"💰 Pay-per-deploy (cost: {total_cost:.4f} ETH, balance: {user_balance:.4f} ETH)"
+        # NOW calculate the fee for pay-per-deploy
+        pay_deploy_fee = 0 if (is_holder or is_bot_owner) else 0.01
+        pay_deploy_total = realistic_gas_cost + pay_deploy_fee
+        
+        if user_balance >= pay_deploy_total:
+            return True, f"💰 Pay-per-deploy (cost: {pay_deploy_total:.4f} ETH, balance: {user_balance:.4f} ETH)"
         
         # Cannot deploy - insufficient balance
         return False, f"""❌ Gas too high! ({likely_gas_gwei:.1f} gwei)
 
-Cost: {total_cost:.4f} ETH
+Cost: {pay_deploy_total:.4f} ETH
 Your balance: {user_balance:.4f} ETH
 
 To deploy when gas > 2 gwei:
@@ -1139,7 +1146,9 @@ Quick & easy deposits!"""
                     self.db.update_cooldown_after_deployment(request.username, deployment_type)
                 elif deployment_type == 'pay-per-deploy':
                     # Deduct from balance
-                    fee = 0 if is_holder else 0.01  # Holders pay no fee!
+                    # Bot owner also pays no fee on their own deployments
+                    is_bot_owner = request.username.lower() == self.bot_username.lower()
+                    fee = 0 if (is_holder or is_bot_owner) else 0.01  # Holders and bot owner pay no fee!
                     new_balance = self.db.update_user_balance_after_deployment(
                         request.username, actual_gas_cost, fee, request.tx_hash, request.token_symbol
                     )
@@ -2165,38 +2174,18 @@ Learn the rules: t.me/DeployOnKlik"""
                         actual_count = len(recent_deploys)
                         deploys_to_show = recent_deploys[:3]  # Show up to 3
                         
-                        # Check if we can fit full DexScreener links
-                        if len(deploys_to_show) <= 2:
-                            # For 1-2 deployments, we can show full DexScreener links
-                            deploy_lines = []
-                            for symbol, address, _ in deploys_to_show:
-                                if address:
-                                    deploy_lines.append(f"${symbol}: dexscreener.com/ethereum/{address}")
-                                else:
-                                    deploy_lines.append(f"${symbol}")
-                            
-                            deploy_text = "\n".join(deploy_lines)
-                            reply_text = f"""@{username} Weekly limit reached! ({actual_count}/3 used)
+                        # ALWAYS show full DexScreener links
+                        deploy_lines = []
+                        for symbol, address, _ in deploys_to_show:
+                            if address:
+                                deploy_lines.append(f"https://dexscreener.com/ethereum/{address}")
+                            else:
+                                deploy_lines.append(f"${symbol} (no address)")
+                        
+                        deploy_text = "\n".join(deploy_lines)
+                        reply_text = f"""@{username} Weekly limit reached! ({actual_count}/3 used)
 
 {deploy_text}
-
-Wait {days} days OR:
-💰 Deposit: t.me/DeployOnKlik
-🎯 Hold $DOK for 10/week"""
-                        else:
-                            # For 3 deployments, use shortened format
-                            deploy_info = []
-                            for symbol, address, _ in deploys_to_show:
-                                if address:
-                                    short_addr = address[:8] if len(address) > 8 else address
-                                    deploy_info.append(f"${symbol} ({short_addr}...)")
-                                else:
-                                    deploy_info.append(f"${symbol}")
-                            
-                            deploy_list = " | ".join(deploy_info)
-                            reply_text = f"""@{username} Weekly limit reached! (3/3 used)
-
-{deploy_list}
 
 Wait {days} days OR deposit: t.me/DeployOnKlik"""
                     else:
@@ -2232,32 +2221,31 @@ Or deposit ETH: t.me/DeployOnKlik"""
                 recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
                 
                 if recent_deploys:
-                    # Show their recent deployments with links
+                    # Show their recent deployments with full DexScreener links
                     if len(recent_deploys) == 1:
                         # Single deployment - show full DexScreener link
                         symbol, address, _ = recent_deploys[0]
                         reply_text = f"""@{username} You already deployed ${symbol}!
 
-📈 dexscreener.com/ethereum/{address}
+📈 https://dexscreener.com/ethereum/{address}
 
 Want more? (3/week limit)
 💰 Deposit: t.me/DeployOnKlik
 🎯 Hold $DOK for 10/week"""
                     else:
-                        # Multiple deployments - show compact list
+                        # Multiple deployments - show full DexScreener links
                         deploy_count = len(recent_deploys[:3])
-                        deploy_info = []
+                        deploy_lines = []
                         for symbol, address, _ in recent_deploys[:3]:
                             if address:
-                                short_addr = address[:8]
-                                deploy_info.append(f"${symbol} ({short_addr}...)")
+                                deploy_lines.append(f"https://dexscreener.com/ethereum/{address}")
                             else:
-                                deploy_info.append(f"${symbol}")
+                                deploy_lines.append(f"${symbol} (no address)")
                         
-                        deploy_list = " | ".join(deploy_info)
+                        deploy_text = "\n".join(deploy_lines)
                         reply_text = f"""@{username} Already deployed {deploy_count} this week!
 
-{deploy_list}
+{deploy_text}
 
 Limit: 3/week | Deposit: t.me/DeployOnKlik"""
                 else:
