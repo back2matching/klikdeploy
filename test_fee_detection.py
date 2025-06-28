@@ -283,15 +283,28 @@ async def process_single_fee_claim():
         print("\nStep 2: Decoding transaction to get token details...")
         decoded = await factory_interface.decode_collect_fee_transaction(tx_hash)
         
-        if not decoded or 'deployed_token' not in decoded:
-            print("❌ Could not decode transaction")
+        if decoded is None:
+            print(f"❌ Transaction decode returned None")
+            print(f"   TX: {tx_hash}")
+            print(f"   This might not be a collectFees transaction")
+            conn.close()
+            return
+        
+        if 'deployed_token' not in decoded:
+            print(f"❌ No deployed_token in decoded data")
+            print(f"   Decoded data: {decoded}")
             conn.close()
             return
         
         token_address = decoded['deployed_token']
+        if not token_address:
+            print(f"❌ Empty token address")
+            conn.close()
+            return
+        
         token_info = decoded.get('token_info', {})
-        token_symbol = token_info.get('symbol', 'UNKNOWN')
-        token_name = token_info.get('name', 'Unknown Token')
+        token_symbol = token_info.get('symbol', 'UNKNOWN') if token_info else 'UNKNOWN'
+        token_name = token_info.get('name', 'Unknown Token') if token_info else 'Unknown Token'
         
         print(f"✅ Decoded successfully!")
         print(f"   Token: ${token_symbol} - {token_name}")
@@ -359,7 +372,8 @@ async def process_single_fee_claim():
         if dok_result['success']:
             print(f"✅ $DOK buyback successful!")
             print(f"   TX: {dok_result['tx_hash']}")
-            print(f"   DOK bought: {dok_result.get('dok_amount', 0):,.2f} (now holding)")
+            if dok_result.get('dok_amount', 0) > 0:
+                print(f"   DOK bought: {dok_result.get('dok_amount', 0):,.2f} (now holding)")
         else:
             print(f"❌ $DOK buyback failed: {dok_result.get('error', 'Unknown error')}")
         
@@ -488,15 +502,31 @@ async def process_all_fee_claims_automated():
             try:
                 decoded = await factory_interface.decode_collect_fee_transaction(tx_hash)
                 
-                if not decoded or 'deployed_token' not in decoded:
-                    print(f"     ❌ Failed to decode transaction - skipping")
+                if decoded is None:
+                    print(f"     ❌ Transaction decode returned None")
+                    print(f"     TX: {tx_hash}")
+                    print(f"     This might not be a collectFees transaction")
                     failed_count += 1
+                    processed_count += 1
+                    continue
+                
+                if 'deployed_token' not in decoded:
+                    print(f"     ❌ No deployed_token in decoded data")
+                    print(f"     Decoded data: {decoded}")
+                    failed_count += 1
+                    processed_count += 1
                     continue
                 
                 token_address = decoded['deployed_token']
+                if not token_address:
+                    print(f"     ❌ Empty token address")
+                    failed_count += 1
+                    processed_count += 1
+                    continue
+                
                 token_info = decoded.get('token_info', {})
-                token_symbol = token_info.get('symbol', 'UNKNOWN')
-                token_name = token_info.get('name', 'Unknown Token')
+                token_symbol = token_info.get('symbol', 'UNKNOWN') if token_info else 'UNKNOWN'
+                token_name = token_info.get('name', 'Unknown Token') if token_info else 'Unknown Token'
                 
                 print(f"     Token: ${token_symbol}")
                 
@@ -536,6 +566,8 @@ async def process_all_fee_claims_automated():
                     print(f"     ✅ $DOK buyback: {dok_result['tx_hash'][:10]}...")
                     dok_success = True
                     total_dok_buyback += dok_buyback
+                    if 'dok_amount' in dok_result:
+                        print(f"     DOK amount: {dok_result['dok_amount']:,.2f}")
                 else:
                     print(f"     ❌ $DOK buyback failed: {dok_result.get('error', 'Unknown error')}")
                 
@@ -560,7 +592,7 @@ async def process_all_fee_claims_automated():
                           value, source_buyback, dok_buyback, treasury,
                           tx_hash, 
                           source_result.get('tx_hash', ''),
-                          dok_result.get('dok_amount', 0),
+                          dok_result.get('dok_amount', None),  # Store NULL if we don't have the real amount
                           status))
                     
                     # Record treasury amount
@@ -585,6 +617,9 @@ async def process_all_fee_claims_automated():
                 
             except Exception as e:
                 print(f"     ❌ Error processing claim: {e}")
+                print(f"     Error type: {type(e).__name__}")
+                import traceback
+                print(f"     Traceback: {traceback.format_exc()}")
                 failed_count += 1
                 processed_count += 1
                 continue
@@ -800,6 +835,24 @@ async def show_unprocessed_summary():
         import traceback
         traceback.print_exc()
 
+async def test_dok_price_v3():
+    """Test getting DOK price from V3 pool"""
+    print("\n💱 Testing DOK V3 Price Fetching")
+    print("="*50)
+    
+    try:
+        price = await factory_interface.get_dok_price_v3()
+        
+        print(f"\nDOK Price: {price:.8f} ETH")
+        print(f"DOK Price in USD: ${price * 2500:.2f} (assuming $2500/ETH)")
+        print(f"\n1 ETH buys: {1/price:,.2f} DOK")
+        print(f"0.01 ETH buys: {0.01/price:,.2f} DOK")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 async def debug_transaction():
     """Debug a specific transaction to understand the data"""
     print("\n🔍 Debug Transaction")
@@ -858,6 +911,30 @@ async def debug_transaction():
         import traceback
         traceback.print_exc()
 
+async def test_find_dok_pool():
+    """Test finding DOK pool on Uniswap V3"""
+    print("\n🔍 Finding DOK Pool on Uniswap V3")
+    print("="*50)
+    
+    try:
+        pool_address = await factory_interface.find_dok_weth_v3_pool()
+        
+        if pool_address:
+            print(f"\n✅ Found DOK/WETH pool: {pool_address}")
+            
+            # Now test getting the price
+            print("\nTesting price fetch from discovered pool...")
+            price = await factory_interface.get_dok_price_v3()
+            print(f"\nDOK Price: {price:.8f} ETH")
+            print(f"DOK Price in USD: ${price * 2500:.2f} (assuming $2500/ETH)")
+        else:
+            print("\n❌ No DOK/WETH pool found on Uniswap V3")
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 if __name__ == "__main__":
     while True:
         print("\n" + "="*50)
@@ -872,9 +949,11 @@ if __name__ == "__main__":
         print("6. Process multiple fee claims (MANUAL mode)")
         print("7. Show unprocessed claims summary")
         print("8. 🤖 AUTOMATED PROCESSING (no confirmations)")
-        print("9. Exit")
+        print("9. Test DOK price from V3 pool")
+        print("10. Test finding DOK pool on Uniswap V3")
+        print("11. Exit")
         
-        choice = input("\nEnter choice (1-9): ")
+        choice = input("\nEnter choice (1-11): ")
         
         if choice == "1":
             asyncio.run(detect_incoming_fee_claims())
@@ -893,11 +972,15 @@ if __name__ == "__main__":
         elif choice == "8":
             asyncio.run(process_all_fee_claims_automated())
         elif choice == "9":
+            asyncio.run(test_dok_price_v3())
+        elif choice == "10":
+            asyncio.run(test_find_dok_pool())
+        elif choice == "11":
             print("\n👋 Goodbye!")
             break
         else:
             print("\n❌ Invalid choice! Please try again.")
         
         # Small pause before showing menu again
-        if choice in ["1", "2", "3", "4", "5", "6", "7", "8"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]:
             input("\n📌 Press Enter to return to menu...") 
