@@ -42,10 +42,17 @@ w3 = Web3(Web3.HTTPProvider(RPC_URL))
 account = Account.from_key(PRIVATE_KEY)
 
 def escape_markdown(text: str) -> str:
-    """Escape special characters for Telegram Markdown V2"""
-    # Characters that need escaping in Markdown
-    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    """Escape special characters for Telegram Markdown"""
+    if not text:
+        return ""
     
+    # Convert to string if not already
+    text = str(text)
+    
+    # Characters that need escaping in Markdown (order matters!)
+    escape_chars = ['\\', '_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    
+    # Escape backslash first to avoid double-escaping
     for char in escape_chars:
         text = text.replace(char, f'\\{char}')
     
@@ -70,8 +77,18 @@ async def safe_edit_message(query, message: str, reply_markup=None, parse_mode='
             # Fallback: send without Markdown formatting
             logger.warning(f"Markdown parsing failed, sending plain text: {e}")
             try:
+                # Strip all Markdown formatting for plain text
+                plain_message = (message
+                                .replace('**', '')
+                                .replace('`', '')
+                                .replace('*', '')
+                                .replace('_', '')
+                                .replace('[', '')
+                                .replace(']', '')
+                                .replace('(', '')
+                                .replace(')', ''))
                 await query.edit_message_text(
-                    message.replace('**', '').replace('`', ''),
+                    plain_message,
                     reply_markup=reply_markup
                 )
             except telegram.error.BadRequest:
@@ -103,14 +120,24 @@ async def safe_send_message(update, message: str, reply_markup=None, parse_mode=
             # Fallback: send without Markdown formatting
             logger.warning(f"Markdown parsing failed, sending plain text: {e}")
             try:
+                # Strip all Markdown formatting for plain text
+                plain_message = (message
+                                .replace('**', '')
+                                .replace('`', '')
+                                .replace('*', '')
+                                .replace('_', '')
+                                .replace('[', '')
+                                .replace(']', '')
+                                .replace('(', '')
+                                .replace(')', ''))
                 if update.callback_query:
                     await update.callback_query.edit_message_text(
-                        message.replace('**', '').replace('`', ''), 
+                        plain_message, 
                         reply_markup=reply_markup
                     )
                 else:
                     await update.message.reply_text(
-                        message.replace('**', '').replace('`', ''), 
+                        plain_message, 
                         reply_markup=reply_markup
                     )
             except telegram.error.BadRequest:
@@ -217,6 +244,22 @@ def init_db():
         )
     ''')
     
+    # Add new columns for verification if they don't exist (for existing databases)
+    try:
+        conn.execute('ALTER TABLE users ADD COLUMN twitter_verified BOOLEAN DEFAULT FALSE')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
+    try:
+        conn.execute('ALTER TABLE users ADD COLUMN verification_code TEXT')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+        
+    try:
+        conn.execute('ALTER TABLE users ADD COLUMN telegram_id INTEGER')
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
     conn.commit()
     conn.close()
 
@@ -302,11 +345,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📚 Full Guide", url="https://t.me/DeployOnKlik")]
         ]
     elif not user[1]:
-        # Has Twitter but no wallet
+        # Has Twitter but no wallet - safely display username
+        safe_twitter = escape_markdown(user[0])
         message = (
             f"**Deploy On Klik**\n"
             f"══════════════════════\n"
-            f"Twitter: @{user[0]} ✅\n"
+            f"Twitter: @{safe_twitter} ✅\n"
             f"Wallet: Not registered ❌\n\n"
             
             f"**Active Now ({current_tier})**\n"
@@ -410,11 +454,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 daily_limit = f"{free_used}/1 free deploy used" if gas_gwei <= 3 else "Pay per deploy active"
                 active_mode = "PAY PER DEPLOY"
         
-        # Build comprehensive message
+        # Check verification status first
+        conn2 = sqlite3.connect('deployments.db')
+        cursor2 = conn2.execute(
+            "SELECT twitter_verified FROM users WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        verification_result = cursor2.fetchone()
+        is_verified = verification_result[0] if verification_result else False
+        conn2.close()
+        
+        # Build comprehensive message with safe username
+        safe_twitter = escape_markdown(twitter_username)
+        verification_status = "✅ Verified" if is_verified else "⚠️ Unverified"
         message = (
             f"**Deploy On Klik 🚀**\n"
             f"══════════════════════\n"
-            f"{status_emoji} **@{twitter_username}** ({status_text})\n"
+            f"{status_emoji} **@{safe_twitter}** ({status_text})\n"
+            f"🔐 Account: {verification_status}\n"
             f"💰 Balance: **{balance:.4f} ETH**\n"
             f"💳 Wallet: `{eth_address}`\n"
             f"══════════════════════\n"
@@ -452,6 +509,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 message += f"\n**FREE tier requires gas ≤ 3 gwei**\n"
                 message += f"Current gas: {gas_gwei:.1f} gwei\n"
         
+        message += "══════════════════════\n"
+        
+        # Add fee capture information
+        if is_verified:
+            message += "🎉 **Fee Capture Available!**\n"
+            message += "You can claim 50% of fees from your deployments\n"
+        else:
+            message += "ℹ️ **Verify Twitter to unlock fee capture**\n"
+            message += "Currently: All fees go to $DOK buyback\n"
+        
         message += "══════════════════════"
         
         keyboard = [
@@ -460,9 +527,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📜 History", callback_data="history"),
              InlineKeyboardButton("🔄 Refresh", callback_data="main_menu")],
             [InlineKeyboardButton("🎯 Check $DOK Holder", callback_data="check_holder"),
-             InlineKeyboardButton("⚙️ Settings", callback_data="settings")],
-            [InlineKeyboardButton("📢 Channel", url="https://t.me/DeployOnKlik")]
+             InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
         ]
+        
+        # Add verification button based on status
+        if is_verified:
+            keyboard.append([InlineKeyboardButton("✅ Verified Account", callback_data="check_verification")])
+        else:
+            keyboard.append([InlineKeyboardButton("🔐 Verify Twitter", callback_data="verify_twitter")])
+            
+        keyboard.append([InlineKeyboardButton("📢 Channel", url="https://t.me/DeployOnKlik")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -547,6 +621,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "check_holder":
         await check_holder_status(update, context)
+    
+    elif query.data == "verify_twitter":
+        await start_twitter_verification(update, context)
+    
+    elif query.data == "check_verification":
+        await check_verification_status(update, context)
 
 async def show_gas_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current gas prices and deployment costs"""
@@ -811,7 +891,9 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "UPDATE deposits SET twitter_username = ? WHERE twitter_username = ?",
                     (twitter_username, old_username)
                 )
-                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{old_username}\nTo: @{twitter_username}\n\n💰 **Recovered balance: {recovered_balance:.4f} ETH**\n\nYour total balance has been updated."
+                safe_old = escape_markdown(old_username)
+                safe_new = escape_markdown(twitter_username)
+                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{safe_old}\nTo: @{safe_new}\n\n💰 **Recovered balance: {recovered_balance:.4f} ETH**\n\nYour total balance has been updated."
             else:
                 conn.execute(
                     "UPDATE users SET twitter_username = ? WHERE telegram_id = ?",
@@ -822,7 +904,9 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "UPDATE deposits SET twitter_username = ? WHERE twitter_username = ?",
                     (twitter_username, old_username)
                 )
-                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{old_username}\nTo: @{twitter_username}\n\nYour wallet and balance remain unchanged."
+                safe_old = escape_markdown(old_username)
+                safe_new = escape_markdown(twitter_username)
+                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{safe_old}\nTo: @{safe_new}\n\nYour wallet and balance remain unchanged."
             
             is_update = True
         else:
@@ -839,7 +923,8 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 (twitter_username, telegram_id)
             )
             
-            message_text = f"**✅ Linked to @{twitter_username}**\n\nNow register your wallet 👇"
+            safe_twitter = escape_markdown(twitter_username)
+            message_text = f"**✅ Linked to @{safe_twitter}**\n\nNow register your wallet 👇"
             is_update = False
         
         conn.commit()
@@ -1600,10 +1685,11 @@ async def check_holder_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
+        safe_twitter = escape_markdown(twitter_username)
         message = f"**$DOK Holder Status 🎯**\n"
         message += f"══════════════════════\n\n"
         message += f"**Your Details:**\n"
-        message += f"• Twitter: **@{twitter_username}**\n"
+        message += f"• Twitter: **@{safe_twitter}**\n"
         message += f"• Wallet: `{eth_address[:6]}...{eth_address[-4:]}`\n\n"
         message += f"══════════════════════\n"
         message += f"**$DOK Balance:**\n"
@@ -1711,6 +1797,133 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Select an option to change:",
         reply_markup
     )
+
+async def start_twitter_verification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start Twitter account verification process"""
+    query = update.callback_query
+    telegram_id = query.from_user.id
+    
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username, twitter_verified FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    
+    if not user:
+        await safe_edit_message(query, "❌ Account not found!")
+        conn.close()
+        return
+    
+    twitter_username, is_verified = user
+    
+    if is_verified:
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        safe_twitter = escape_markdown(twitter_username)
+        await safe_edit_message(query,
+            f"**✅ Already Verified**\n"
+            f"══════════════════════\n"
+            f"@{safe_twitter} is already verified!\n\n"
+            f"You can claim fees from your deployments.",
+            reply_markup
+        )
+        conn.close()
+        return
+    
+    # Import database class to generate verification code
+    from deployer.database import DeploymentDatabase
+    db = DeploymentDatabase()
+    
+    # Generate verification code
+    verification_code = db.generate_verification_code(twitter_username)
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 Check Verification", callback_data="check_verification")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    safe_twitter = escape_markdown(twitter_username)
+    await safe_edit_message(query,
+        f"**Twitter Verification 🔐**\n"
+        f"══════════════════════\n\n"
+        f"**Step 1: Tweet this message**\n"
+        f"══════════════════════\n"
+        f"Copy and tweet the following from @{safe_twitter}:\n\n"
+        f"`@DeployOnKlik !verify user {verification_code} in order to use start claiming fees from @{twitter_username}`\n\n"
+        f"**Step 2: Wait for confirmation**\n"
+        f"══════════════════════\n"
+        f"After tweeting, click 'Check Verification'\n\n"
+        f"**Why verify?**\n"
+        f"══════════════════════\n"
+        f"• Claim 50% of fees from your deployments\n"
+        f"• Prevent others from claiming your tokens\n"
+        f"• Unlock advanced deployment features\n\n"
+        f"**Before verification:**\n"
+        f"All fees go to $DOK buyback (current system)",
+        reply_markup
+    )
+    
+    conn.close()
+
+async def check_verification_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check if Twitter verification tweet was posted"""
+    query = update.callback_query
+    telegram_id = query.from_user.id
+    
+    await safe_edit_message(query, "🔄 Checking for verification tweet...")
+    
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username, verification_code FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    
+    if not user:
+        await safe_edit_message(query, "❌ Account not found!")
+        conn.close()
+        return
+    
+    twitter_username, verification_code = user
+    
+    if not verification_code:
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await safe_edit_message(query,
+            "✅ Account already verified!",
+            reply_markup
+        )
+        conn.close()
+        return
+    
+    # Check if verification was processed by Twitter monitor
+    # The Twitter monitor automatically detects verification tweets
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 Check Again", callback_data="check_verification")],
+        [InlineKeyboardButton("🔐 Start Verification", callback_data="verify_twitter")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    safe_twitter = escape_markdown(twitter_username)
+    await safe_edit_message(query,
+        f"**Verification Status ⏳**\n"
+        f"══════════════════════\n\n"
+        f"**Looking for this tweet from @{safe_twitter}:**\n"
+        f"`@DeployOnKlik !verify user {verification_code} in order to use start claiming fees from @{twitter_username}`\n\n"
+        f"**Status:** Not found yet\n\n"
+        f"**Instructions:**\n"
+        f"1. Tweet the exact message above\n"
+        f"2. Wait 30-60 seconds for processing\n"
+        f"3. Click 'Check Again'\n\n"
+        f"**Note:** Verification is fully automated! Our system monitors Twitter in real-time.",
+        reply_markup
+    )
+    
+    conn.close()
 
 async def credit_failed_deployment(username: str, amount: float, tx_hash: str):
     """Credit user for a failed deployment - safety mechanism"""
@@ -1868,10 +2081,11 @@ async def manual_credit_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         conn.close()
         
+        safe_twitter = escape_markdown(twitter_username)
         await update.message.reply_text(
             f"**✅ Deposit Credited!**\n"
             f"══════════════════════\n"
-            f"User: @{twitter_username}\n"
+            f"User: @{safe_twitter}\n"
             f"Amount: {value:.4f} ETH\n"
             f"Old Balance: {old_balance:.4f} ETH\n"
             f"New Balance: {old_balance + value:.4f} ETH\n"
@@ -1895,6 +2109,105 @@ async def manual_credit_tx(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         except:
             pass
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def manual_verify_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually verify a user's Twitter account - bot owner only"""
+    telegram_id = update.effective_user.id
+    
+    # Verify bot owner
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or user[0].lower() != 'deployonklik':
+        await update.message.reply_text("❌ Unauthorized!")
+        return
+    
+    # Check arguments
+    if not context.args or len(context.args) != 1:
+        await update.message.reply_text(
+            "**Manual User Verification**\n"
+            "══════════════════════\n"
+            "Usage: `/verify <twitter_username>`\n\n"
+            "This will manually verify a Twitter account\n"
+            "and unlock fee capture for that user.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    target_username = context.args[0].strip().lower().replace('@', '')
+    
+    try:
+        # Import database class
+        from deployer.database import DeploymentDatabase
+        db = DeploymentDatabase()
+        
+        # Check if user exists
+        conn = sqlite3.connect('deployments.db')
+        cursor = conn.execute(
+            "SELECT twitter_username, twitter_verified, telegram_id FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+            (target_username,)
+        )
+        user_data = cursor.fetchone()
+        
+        if not user_data:
+            await update.message.reply_text(f"❌ User @{target_username} not found in database!")
+            conn.close()
+            return
+        
+        twitter_username, is_verified, user_telegram_id = user_data
+        
+        if is_verified:
+            await update.message.reply_text(f"ℹ️ User @{twitter_username} is already verified!")
+            conn.close()
+            return
+        
+        # Manually verify the user
+        conn.execute('''
+            UPDATE users 
+            SET twitter_verified = TRUE, verification_code = NULL
+            WHERE LOWER(twitter_username) = LOWER(?)
+        ''', (target_username,))
+        
+        conn.commit()
+        conn.close()
+        
+        safe_username = escape_markdown(twitter_username)
+        await update.message.reply_text(
+            f"**✅ User Verified!**\n"
+            f"══════════════════════\n"
+            f"User: @{safe_username}\n"
+            f"Status: Manually verified by admin\n\n"
+            f"Fee capture has been unlocked for this user.",
+            parse_mode='Markdown'
+        )
+        
+        # Try to notify the user if they have Telegram linked
+        try:
+            if user_telegram_id:
+                await context.bot.send_message(
+                    chat_id=user_telegram_id,
+                    text=(
+                        f"🎉 **Account Verified!**\n"
+                        f"══════════════════════\n\n"
+                        f"Your Twitter account @{twitter_username} has been verified by support!\n\n"
+                        f"**New Benefits Unlocked:**\n"
+                        f"• 50% fee capture from your deployments\n"
+                        f"• Advanced deployment features\n"
+                        f"• Verified account status\n\n"
+                        f"**Next:** Deploy tokens to start earning fees!"
+                    ),
+                    parse_mode='Markdown'
+                )
+        except:
+            pass  # Ignore notification errors
             
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
@@ -1931,6 +2244,7 @@ def main():
     application.add_handler(CommandHandler("wallet", register_wallet))
     application.add_handler(CommandHandler("withdraw", withdraw))
     application.add_handler(CommandHandler("credit_tx", manual_credit_tx))  # Manual credit for support
+    application.add_handler(CommandHandler("verify", manual_verify_user))  # Manual verification for support
     application.add_handler(CallbackQueryHandler(button_callback))
     
     # Start monitoring in background
@@ -1942,7 +2256,7 @@ def main():
     print("🤖 Telegram Management Bot Started!")
     print("🔗 Bot: @DeployOnKlikBot")
     print("✅ Fully automated - no admin needed!")
-    print("📱 Commands: /start /link /wallet /withdraw /credit_tx")
+    print("📱 Commands: /start /link /wallet /withdraw /credit_tx /verify")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':

@@ -53,15 +53,35 @@ class TwitterMonitor:
         rules = await filter_manager.get_rules()
         active_rules = [r for r in rules if r.get('is_effect', 0) == 1]
         
-        if not active_rules:
+        # Check if we have both deployment and verification rules
+        deployment_rule = None
+        verification_rule = None
+        
+        for rule in active_rules:
+            if rule['tag'].endswith('_mentions'):
+                deployment_rule = rule
+            elif rule['tag'].endswith('_verification'):
+                verification_rule = rule
+        
+        if not deployment_rule and not verification_rule:
             print("⚠️  No active filter rules found!")
-            print("📝 Setting up filter rule for real-time monitoring...")
-            success = await filter_manager.setup_deployment_rule(interval_seconds=1.5)
+            print("📝 Setting up both deployment and verification rules...")
+            success = await filter_manager.setup_both_rules()
             if not success:
                 print("❌ Failed to set up filter rules. Please check manually at https://twitterapi.io")
                 return
-            print("✅ Filter rule activated with 1.5s interval!")
-        else:
+            print("✅ Both filter rules activated!")
+        elif not verification_rule:
+            print("⚠️  Missing verification rule!")
+            print("📝 Setting up verification rule...")
+            success = await filter_manager.setup_verification_rule(interval_seconds=15.0)
+            if not success:
+                print("❌ Failed to set up verification rule")
+                return
+            print("✅ Verification rule activated!")
+        
+        # Show current rules
+        if active_rules:
             print(f"✅ Found {len(active_rules)} active filter rule(s)")
             for rule in active_rules:
                 print(f"   - {rule['tag']}: {rule['value']} (interval: {rule['interval_seconds']}s)")
@@ -285,6 +305,13 @@ class TwitterMonitor:
             
             if parent_media:
                 self.logger.info(f"Found {len(parent_media)} images in parent tweet")
+        
+        # Check if this is a verification tweet first
+        verification_result = await self._check_verification_tweet(text, username)
+        if verification_result:
+            print(f"\n🔐 {verification_result}")
+            print(f"✅ Processed verification in {time.time() - start_time:.1f}s total")
+            return
         
         # Process deployment
         result = await self.deployer.process_tweet_mention(processed_data)
@@ -549,4 +576,98 @@ class TwitterMonitor:
                         'type': 'photo',
                         'url': media.get('media_url_https', media.get('media_url'))
                     })
-        return media_list 
+        return media_list
+    
+    async def _check_verification_tweet(self, text: str, username: str) -> str:
+        """Check if this is a verification tweet and process it"""
+        import re
+        import sqlite3
+        
+        # Pattern: "@DeployOnKlik !verify user [CODE] in order to use start claiming fees from @[username]"
+        verification_pattern = r"@deployonklik\s+!verify\s+user\s+([A-Z0-9]{8})\s+in\s+order\s+to\s+use\s+start\s+claiming\s+fees\s+from\s+@(\w+)"
+        match = re.search(verification_pattern, text.lower())
+        
+        if not match:
+            return None
+        
+        verification_code = match.group(1).upper()
+        claimed_username = match.group(2).lower()
+        
+        # Security: Verify the username in the tweet matches who is tweeting
+        if claimed_username != username.lower():
+            self.logger.warning(f"Username mismatch: @{username} tweeted verification for @{claimed_username}")
+            return f"❌ Username mismatch: You tweeted verification for @{claimed_username} but you are @{username}"
+        
+        self.logger.info(f"Found verification tweet from @{username} with code: {verification_code}")
+        
+        try:
+            # Import database class
+            from deployer.database import DeploymentDatabase
+            db = DeploymentDatabase()
+            
+            # Verify the code
+            success = db.verify_twitter_account(username, verification_code)
+            
+            if success:
+                self.logger.info(f"✅ Successfully verified @{username}")
+                
+                # Send notification to Telegram if user has Telegram linked
+                await self._send_verification_success_notification(username)
+                
+                return f"✅ Verification successful for @{username}! Account verified and fee capture unlocked."
+            else:
+                self.logger.warning(f"❌ Invalid verification code from @{username}: {verification_code}")
+                return f"❌ Invalid verification code from @{username}"
+                
+        except Exception as e:
+            self.logger.error(f"Error processing verification for @{username}: {e}")
+            return f"❌ Error processing verification for @{username}"
+    
+    async def _send_verification_success_notification(self, username: str):
+        """Send Telegram notification when verification succeeds"""
+        try:
+            import sqlite3
+            import os
+            from telegram import Bot
+            
+            # Get user's Telegram ID
+            conn = sqlite3.connect('deployments.db')
+            cursor = conn.execute(
+                "SELECT telegram_id FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+                (username,)
+            )
+            result = cursor.fetchone()
+            conn.close()
+            
+            if not result or not result[0]:
+                return  # No Telegram linked
+            
+            telegram_id = result[0]
+            bot_token = os.getenv('TELEGRAM_DEPLOYER_BOT')
+            
+            if not bot_token:
+                return  # No bot token
+            
+            bot = Bot(token=bot_token)
+            
+            message = (
+                f"🎉 **Verification Complete!**\n"
+                f"══════════════════════\n\n"
+                f"✅ @{username} is now verified!\n\n"
+                f"**New Benefits Unlocked:**\n"
+                f"• 50% fee capture from your deployments\n"
+                f"• Advanced deployment features\n"
+                f"• Verified account status\n\n"
+                f"**Next:** Deploy tokens to start earning fees!"
+            )
+            
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=message,
+                parse_mode='Markdown'
+            )
+            
+            self.logger.info(f"Sent verification success notification to Telegram user {telegram_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send verification notification: {e}") 

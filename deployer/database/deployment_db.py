@@ -53,9 +53,12 @@ class DeploymentDatabase:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     twitter_username TEXT UNIQUE,
                     eth_address TEXT,
+                    telegram_id INTEGER,
                     balance REAL DEFAULT 0,
                     is_holder BOOLEAN DEFAULT FALSE,
                     holder_balance REAL DEFAULT 0,
+                    twitter_verified BOOLEAN DEFAULT FALSE,
+                    verification_code TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -630,4 +633,83 @@ class DeploymentDatabase:
             if expired_count + fixed_count > 0:
                 self.logger.info(f"Cleaned up {expired_count} expired cooldowns, fixed {fixed_count} excessive cooldowns")
             
-            return expired_count + fixed_count 
+            return expired_count + fixed_count
+    
+    # SECURITY: Twitter Account Verification Methods
+    
+    def generate_verification_code(self, username: str) -> str:
+        """Generate a unique verification code for Twitter account verification"""
+        import secrets
+        import string
+        
+        # Generate 8-character alphanumeric code
+        code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(8))
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                UPDATE users 
+                SET verification_code = ?, twitter_verified = FALSE
+                WHERE LOWER(twitter_username) = LOWER(?)
+            ''', (code, username))
+            
+        return code
+    
+    def check_verification_status(self, username: str) -> Tuple[bool, Optional[str]]:
+        """Check if Twitter account is verified and get verification code if needed
+        
+        Returns:
+            Tuple of (is_verified, verification_code_if_unverified)
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT twitter_verified, verification_code FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+                (username,)
+            )
+            result = cursor.fetchone()
+            
+            if not result:
+                return False, None
+                
+            is_verified, code = result
+            return bool(is_verified), code if not is_verified else None
+    
+    def verify_twitter_account(self, username: str, code: str) -> bool:
+        """Verify Twitter account with provided code
+        
+        Returns:
+            True if verification successful, False otherwise
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                UPDATE users 
+                SET twitter_verified = TRUE, verification_code = NULL
+                WHERE LOWER(twitter_username) = LOWER(?) AND verification_code = ?
+                RETURNING twitter_username
+            ''', (username, code))
+            
+            result = cursor.fetchone()
+            return result is not None
+    
+    def can_claim_fees(self, username: str) -> bool:
+        """Check if user can claim fees (verified account)
+        
+        Returns:
+            True if user can claim fees, False otherwise
+        """
+        is_verified, _ = self.check_verification_status(username)
+        return is_verified
+    
+    def get_unverified_accounts_with_balance(self) -> List[Tuple[str, float]]:
+        """Get list of unverified accounts that have deposited funds
+        
+        Returns:
+            List of (username, balance) tuples for unverified accounts with balance > 0
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                SELECT twitter_username, balance 
+                FROM users 
+                WHERE twitter_verified = FALSE AND balance > 0
+                ORDER BY balance DESC
+            ''')
+            return cursor.fetchall() 

@@ -159,6 +159,62 @@ class TwitterFilterManager:
                 )
             return False
     
+    async def setup_verification_rule(self, interval_seconds: float = 15.0) -> bool:
+        """Set up a separate rule for verification tweets (less frequent)"""
+        # Check existing rules
+        existing_rules = await self.get_rules()
+        
+        # Look for our verification rule
+        verification_rule = None
+        for rule in existing_rules:
+            if rule['tag'] == f"{self.bot_username}_verification":
+                verification_rule = rule
+                break
+        
+        # The filter value to monitor verification tweets
+        # Pattern: "@DeployOnKlik !verify user [CODE] in order to use start claiming fees from @[username]"
+        filter_value = f"@{self.bot_username} !verify user"
+        
+        if verification_rule:
+            # Update existing rule and ensure it's active
+            print(f"📝 Found existing verification rule: {verification_rule['tag']}")
+            success = await self.update_rule(
+                rule_id=verification_rule['rule_id'],
+                tag=verification_rule['tag'],
+                value=filter_value,
+                interval_seconds=interval_seconds,  # Higher interval for verification
+                is_effect=1  # Activate it
+            )
+            return success
+        else:
+            # Create new rule
+            print(f"🆕 Creating new verification rule for @{self.bot_username}...")
+            rule_id = await self.add_rule(
+                tag=f"{self.bot_username}_verification",
+                value=filter_value,
+                interval_seconds=interval_seconds
+            )
+            
+            if rule_id:
+                # Activate the rule
+                return await self.update_rule(
+                    rule_id=rule_id,
+                    tag=f"{self.bot_username}_verification",
+                    value=filter_value,
+                    interval_seconds=interval_seconds,
+                    is_effect=1
+                )
+            return False
+    
+    async def setup_both_rules(self) -> bool:
+        """Set up both deployment and verification rules"""
+        print("🔧 Setting up both deployment and verification rules...")
+        
+        deployment_success = await self.setup_deployment_rule(interval_seconds=3.0)  # Keep deployment fast
+        verification_success = await self.setup_verification_rule(interval_seconds=15.0)  # Verification slower
+        
+        return deployment_success and verification_success
+    
     async def show_all_rules(self):
         """Display all current filter rules"""
         rules = await self.get_rules()
@@ -219,18 +275,20 @@ async def main():
                 await manager.delete_rule(rule['rule_id'])
             print(f"✅ Deleted {len(rules)} rules")
     
-    # Set up deployment rule with 1.5 second interval
-    print(f"\n⚙️  Setting up filter rule for: @{manager.bot_username} ($)")
-    print(f"⏱️  Using 1.5 second interval for balanced performance")
-    success = await manager.setup_deployment_rule(interval_seconds=1.5)
+    # Set up both deployment and verification rules
+    print(f"\n⚙️  Setting up filter rules for: @{manager.bot_username}")
+    print(f"📦 Deployment rule: @{manager.bot_username} ($) - 3s interval")
+    print(f"🔐 Verification rule: @{manager.bot_username} !verify user - 15s interval")
+    
+    success = await manager.setup_both_rules()
     
     if success:
-        print("\n✅ Filter rule is active and ready for WebSocket monitoring!")
-        print(f"📡 The bot will receive updates for: @{manager.bot_username} ($)")
-        print(f"⏱️  Check interval: 1.5 seconds")
+        print("\n✅ Both filter rules are active and ready for WebSocket monitoring!")
+        print(f"📡 Deployments: @{manager.bot_username} ($) - 3s interval")
+        print(f"📡 Verification: @{manager.bot_username} !verify user - 15s interval")
         print("\n💡 Remember: Billing starts when rules are active!")
     else:
-        print("\n❌ Failed to set up filter rule")
+        print("\n❌ Failed to set up one or more filter rules")
     
     # Show final state
     print("\n📊 FINAL RULE STATUS:")
