@@ -203,7 +203,7 @@ class DeploymentDatabase:
             # SECURITY: Check if user has ever deposited from this wallet
             # This proves they own the wallet
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND from_address = ? AND confirmed = 1",
+                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND LOWER(from_address) = LOWER(?) AND confirmed = 1",
                 (username, wallet)
             )
             deposit_count = cursor.fetchone()[0]

@@ -1511,7 +1511,7 @@ async def check_holder_status(update: Update, context: ContextTypes.DEFAULT_TYPE
             message += f"**✅ YOU ARE A HOLDER!**\n\n"
             # Check if wallet is verified through deposits
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND from_address = ? AND confirmed = 1",
+                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND LOWER(from_address) = LOWER(?) AND confirmed = 1",
                 (twitter_username, eth_address)
             )
             deposit_count = cursor.fetchone()[0]

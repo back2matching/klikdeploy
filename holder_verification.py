@@ -227,7 +227,7 @@ def verify_specific_user(twitter_username: str):
         if is_holder:
             # Check if wallet has deposited
             cursor = conn.execute(
-                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND from_address = ? AND confirmed = 1",
+                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND LOWER(from_address) = LOWER(?) AND confirmed = 1",
                 (twitter_username, wallet)
             )
             deposit_count = cursor.fetchone()[0]
