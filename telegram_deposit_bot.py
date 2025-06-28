@@ -51,6 +51,36 @@ def escape_markdown(text: str) -> str:
     
     return text
 
+async def safe_edit_message(query, message: str, reply_markup=None, parse_mode='Markdown'):
+    """Safely edit a callback query message with error handling"""
+    try:
+        await query.edit_message_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode=parse_mode
+        )
+    except telegram.error.BadRequest as e:
+        error_str = str(e)
+        
+        if "Message is not modified" in error_str:
+            # Message content is identical - just acknowledge the button press
+            await query.answer("Already up to date")
+            
+        elif "Can't parse entities" in error_str:
+            # Fallback: send without Markdown formatting
+            logger.warning(f"Markdown parsing failed, sending plain text: {e}")
+            try:
+                await query.edit_message_text(
+                    message.replace('**', '').replace('`', ''),
+                    reply_markup=reply_markup
+                )
+            except telegram.error.BadRequest:
+                # If even plain text fails, just acknowledge the button press
+                await query.answer("Message updated")
+        else:
+            # Re-raise other errors
+            raise
+
 async def safe_send_message(update, message: str, reply_markup=None, parse_mode='Markdown'):
     """Safely send a message with fallback for parsing errors"""
     try:
@@ -67,19 +97,33 @@ async def safe_send_message(update, message: str, reply_markup=None, parse_mode=
                 parse_mode=parse_mode
             )
     except telegram.error.BadRequest as e:
-        if "Can't parse entities" in str(e):
+        error_str = str(e)
+        
+        if "Can't parse entities" in error_str:
             # Fallback: send without Markdown formatting
             logger.warning(f"Markdown parsing failed, sending plain text: {e}")
+            try:
+                if update.callback_query:
+                    await update.callback_query.edit_message_text(
+                        message.replace('**', '').replace('`', ''), 
+                        reply_markup=reply_markup
+                    )
+                else:
+                    await update.message.reply_text(
+                        message.replace('**', '').replace('`', ''), 
+                        reply_markup=reply_markup
+                    )
+            except telegram.error.BadRequest:
+                # If even plain text fails, just acknowledge the button press
+                if update.callback_query:
+                    await update.callback_query.answer("Message updated")
+                    
+        elif "Message is not modified" in error_str:
+            # Message content is identical - just acknowledge the button press
             if update.callback_query:
-                await update.callback_query.edit_message_text(
-                    message.replace('**', '').replace('`', ''), 
-                    reply_markup=reply_markup
-                )
-            else:
-                await update.message.reply_text(
-                    message.replace('**', '').replace('`', ''), 
-                    reply_markup=reply_markup
-                )
+                await update.callback_query.answer("Already up to date")
+            # For regular messages, we don't need to do anything
+            
         else:
             # Re-raise other errors
             raise
@@ -439,7 +483,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🏠 Back", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "**Link Twitter Account**\n"
             "══════════════════════\n\n"
             "**Instructions**\n"
@@ -454,15 +498,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "• Enables holder verification\n"
             "• Links deposits to your account\n\n"
             "**Note:** You can change this later in settings.",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
+            reply_markup
         )
     
     elif query.data == "register_wallet":
         keyboard = [[InlineKeyboardButton("🏠 Back", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "**Register ETH Wallet**\n"
             "══════════════════════\n\n"
             "**Instructions**\n"
@@ -481,8 +524,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "══════════════════════\n"
             "This prevents unauthorized deposits and\n"
             "ensures only YOU can fund your account.",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
+            reply_markup
         )
     
     elif query.data == "deposit":
@@ -568,7 +610,7 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = cursor.fetchone()
     
     if not user:
-        await query.edit_message_text("❌ Account not found!")
+        await safe_edit_message(query, "❌ Account not found!")
         conn.close()
         return
     
@@ -644,11 +686,7 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += f"══════════════════════\n"
     message += f"For full transaction details,\ncheck Etherscan."
     
-    await query.edit_message_text(
-        message,
-        parse_mode='Markdown',
-        reply_markup=reply_markup
-    )
+    await safe_edit_message(query, message, reply_markup)
 
 async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Link Twitter username to Telegram account"""
@@ -673,7 +711,6 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Handle URLs (extract username from x.com or twitter.com links)
     if 'x.com/' in twitter_username or 'twitter.com/' in twitter_username:
         # Extract username from URL
-        import re
         url_match = re.search(r'(?:x\.com|twitter\.com)/([^/?]+)', twitter_username)
         if url_match:
             twitter_username = url_match.group(1)
@@ -903,9 +940,9 @@ async def show_deposit_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user or not user[1]:
         keyboard = [[InlineKeyboardButton("💳 Register Wallet", callback_data="register_wallet")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "❌ Please register your wallet first!",
-            reply_markup=reply_markup
+            reply_markup
         )
         return
     
@@ -935,7 +972,7 @@ async def show_deposit_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fee_amount = 0 if is_holder else 0.01
     fee_text = "NO FEES!" if is_holder else "0.01 ETH fee"
     
-    await query.edit_message_text(
+    await safe_edit_message(query,
         f"**Deposit Instructions**\n"
         f"══════════════════════\n\n"
         f"**Your Account**\n"
@@ -963,8 +1000,7 @@ async def show_deposit_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**After Sending**\n"
         f"══════════════════════\n"
         f"Click below to check for deposits:",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
+        reply_markup
     )
 
 async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -972,7 +1008,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     telegram_id = query.from_user.id
     
-    await query.edit_message_text("🔄 Checking entire transaction history...")
+    await safe_edit_message(query, "🔄 Checking entire transaction history...")
     
     conn = sqlite3.connect('deployments.db')
     cursor = conn.execute(
@@ -982,7 +1018,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = cursor.fetchone()
     
     if not user or not user[0]:
-        await query.edit_message_text("❌ No wallet registered!")
+        await safe_edit_message(query, "❌ No wallet registered!")
         conn.close()
         return
     
@@ -1082,7 +1118,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     deploy_fee = 0.01  # TODO: Check if holder
                     tokens_available = int((old_balance + total_deposited) / (deploy_cost + deploy_fee))
                     
-                    await query.edit_message_text(
+                    await safe_edit_message(query,
                         f"**Deposit Confirmed ✅**\n"
                         f"══════════════════════\n\n"
                         f"**Transaction Details**\n"
@@ -1102,8 +1138,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Tweet `@DeployOnKlik $TICKER` to deploy!\n\n"
                         f"You can now deploy approximately:\n"
                         f"**{tokens_available} tokens** at current gas ({gas_gwei:.1f} gwei)",
-                        parse_mode='Markdown',
-                        reply_markup=reply_markup
+                        reply_markup
                     )
                 else:
                     keyboard = [
@@ -1122,7 +1157,7 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"• Invalid amounts: {skipped_count}\n\n"
                         )
                     
-                    await query.edit_message_text(
+                    await safe_edit_message(query,
                         "**No New Deposits Found**\n"
                         "══════════════════════\n\n"
                         + summary_text +
@@ -1140,16 +1175,15 @@ async def check_my_deposits(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"`{BOT_WALLET}`\n\n"
                         "**Note:** Checked entire transaction history.\n"
                         "No new valid deposits to credit.",
-                        parse_mode='Markdown',
-                        reply_markup=reply_markup
+                        reply_markup
                     )
     except Exception as e:
         logger.error(f"Error checking deposits: {e}")
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "❌ Error checking deposits. Please try again.",
-            reply_markup=reply_markup
+            reply_markup
         )
     finally:
         conn.close()
@@ -1168,7 +1202,7 @@ async def show_withdraw_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
     conn.close()
     
     if not user:
-        await query.edit_message_text("❌ Account not found!")
+        await safe_edit_message(query, "❌ Account not found!")
         return
     
     balance, eth_address = user
@@ -1180,11 +1214,11 @@ async def show_withdraw_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        await safe_edit_message(query,
             f"❌ **Insufficient balance!**\n\n"
             f"Your balance: {balance:.4f} ETH\n"
             f"Minimum withdrawal: 0.01 ETH",
-            reply_markup=reply_markup
+            reply_markup
         )
         return
     
@@ -1206,7 +1240,7 @@ async def show_withdraw_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
     base_gwei = float(w3.from_wei(base_gas_price, 'gwei'))
     final_gwei = float(w3.from_wei(gas_price, 'gwei'))
     
-    await query.edit_message_text(
+    await safe_edit_message(query,
         f"**Withdrawal Confirmation 📤**\n"
         f"══════════════════════\n\n"
         f"**Transaction Details:**\n"
@@ -1221,8 +1255,7 @@ async def show_withdraw_info(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"══════════════════════\n"
         f"💰 **You'll receive: ~{net_amount:.4f} ETH**\n\n"
         f"Withdraw your entire balance?",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
+        reply_markup
     )
 
 async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1230,7 +1263,7 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     telegram_id = query.from_user.id
     
-    await query.edit_message_text("⏳ Processing withdrawal...")
+    await safe_edit_message(query, "⏳ Processing withdrawal...")
     
     # Get user info
     conn = sqlite3.connect('deployments.db')
@@ -1242,7 +1275,7 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if not user or user[0] < 0.01:
         conn.close()
-        await query.edit_message_text("❌ Insufficient balance!")
+        await safe_edit_message(query, "❌ Insufficient balance!")
         return
     
     balance, eth_address, twitter_username = user
@@ -1294,22 +1327,21 @@ async def confirm_withdrawal(update: Update, context: ContextTypes.DEFAULT_TYPE)
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        await safe_edit_message(query,
             f"✅ **Withdrawal Sent!**\n\n"
             f"Amount: {balance:.4f} ETH\n"
             f"To: `{eth_address}`\n"
             f"TX: `{tx_hash_hex}`\n\n"
             f"Your balance is now: 0 ETH\n\n"
             f"[View on Etherscan](https://etherscan.io/tx/{tx_hash_hex})",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
+            reply_markup
         )
         
         logger.info(f"Withdrawal completed: @{twitter_username} withdrew {balance:.4f} ETH")
         
     except Exception as e:
         logger.error(f"Withdrawal error: {e}")
-        await query.edit_message_text(
+        await safe_edit_message(query,
             f"❌ Withdrawal failed!\n"
             f"Error: {str(e)}\n\n"
             f"Your balance was not deducted. Please try again."
@@ -1529,7 +1561,7 @@ async def check_holder_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     telegram_id = query.from_user.id
     
-    await query.edit_message_text("🔄 Checking $DOK holder status...")
+    await safe_edit_message(query, "🔄 Checking $DOK holder status...")
     
     conn = sqlite3.connect('deployments.db')
     cursor = conn.execute(
@@ -1541,9 +1573,9 @@ async def check_holder_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not user or not user[1]:
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "❌ No wallet registered! Register a wallet first to check holder status.",
-            reply_markup=reply_markup
+            reply_markup
         )
         conn.close()
         return
@@ -1614,27 +1646,22 @@ async def check_holder_status(update: Update, context: ContextTypes.DEFAULT_TYPE
             message += f"• [Uniswap](https://app.uniswap.org/#/swap?outputCurrency=0x69ca61398eca94d880393522c1ef5c3d8c058837)\n\n"
             message += f"CA: `0x69ca61398eCa94D880393522C1Ef5c3D8c058837`"
         
-        await query.edit_message_text(
-            message,
-            parse_mode='Markdown',
-            reply_markup=reply_markup,
-            disable_web_page_preview=False
-        )
+        await safe_edit_message(query, message, reply_markup, parse_mode='Markdown')
         
     except ImportError:
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "❌ Holder verification system not available. Please contact support.",
-            reply_markup=reply_markup
+            reply_markup
         )
     except Exception as e:
         logger.error(f"Error checking holder status: {e}")
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
+        await safe_edit_message(query,
             "❌ Error checking holder status. Please try again later.",
-            reply_markup=reply_markup
+            reply_markup
         )
     finally:
         conn.close()
@@ -1653,7 +1680,7 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if not user:
-        await query.edit_message_text("❌ Account not found!")
+        await safe_edit_message(query, "❌ Account not found!")
         return
     
     twitter_username, eth_address = user[0], user[1]
@@ -1665,18 +1692,24 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    wallet_display = f"`{eth_address}`" if eth_address else "Not set"
+    # Safely format wallet address
+    if eth_address:
+        wallet_display = f"`{eth_address}`"
+    else:
+        wallet_display = "Not set"
     
-    await query.edit_message_text(
+    # Safely format Twitter username
+    safe_twitter = escape_markdown(twitter_username)
+    
+    await safe_edit_message(query,
         f"**Settings ⚙️**\n"
         f"══════════════════════\n\n"
         f"**Current Setup:**\n"
-        f"• Twitter: **@{twitter_username}**\n"
+        f"• Twitter: **@{safe_twitter}**\n"
         f"• Wallet: {wallet_display}\n\n"
         f"══════════════════════\n"
         f"Select an option to change:",
-        parse_mode='Markdown',
-        reply_markup=reply_markup
+        reply_markup
     )
 
 async def credit_failed_deployment(username: str, amount: float, tx_hash: str):
