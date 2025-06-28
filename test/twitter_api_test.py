@@ -39,13 +39,16 @@ class TwitterAPITest:
         print("\n3. Permission Check")
         self.check_permissions()
         
-        print("\n4. Rate Limit Status")
+        print("\n4. App vs User Limits Explanation")
+        self.check_app_vs_user_limits()
+        
+        print("\n5. Rate Limit Status")
         self.check_rate_limits()
         
-        print("\n5. Account Tier Check")
+        print("\n6. Account Tier Check")
         self.check_account_tier()
         
-        print("\n6. Tweet Endpoint Rate Limit")
+        print("\n7. Tweet Endpoint Rate Limit")
         self.check_tweet_endpoint_limits()
         
     def check_credentials(self):
@@ -218,6 +221,87 @@ class TwitterAPITest:
         except Exception as e:
             print(f"❌ Error checking tweet endpoint: {e}")
             
+    def check_app_vs_user_limits(self):
+        """Check both app-level and user-level limits to show the difference"""
+        print("🔍 APP vs USER RATE LIMITS EXPLAINED\n")
+        
+        print("📱 APP-LEVEL LIMITS (Bearer Token only):")
+        print("   • Used for reading public data")
+        print("   • Higher limits typically")
+        print("   • Cannot post tweets")
+        
+        # Check app-level limits using bearer token
+        try:
+            headers = {"Authorization": f"Bearer {self.bearer_token}"}
+            response = requests.get(
+                "https://api.twitter.com/2/users/by/username/twitter",
+                headers=headers
+            )
+            
+            if response.status_code == 200:
+                app_limit_headers = {}
+                for header, value in response.headers.items():
+                    if 'rate-limit' in header.lower() or 'x-rate-limit' in header.lower():
+                        app_limit_headers[header] = value
+                
+                if app_limit_headers:
+                    print("   ✅ App-level rate limit headers:")
+                    for header, value in app_limit_headers.items():
+                        print(f"      • {header}: {value}")
+                else:
+                    print("   📊 No standard rate limit headers found")
+                    
+        except Exception as e:
+            print(f"   ❌ Error checking app limits: {e}")
+        
+        print("\n👤 USER-LEVEL LIMITS (OAuth with access tokens):")
+        print("   • Used for posting tweets and user-specific actions")
+        print("   • Lower limits per user")
+        print("   • Required for posting")
+        
+        # Check user-level limits
+        try:
+            auth = OAuth1(self.api_key, self.api_secret, self.access_token, self.access_token_secret)
+            response = requests.post(
+                "https://api.twitter.com/2/tweets",
+                json={"text": "Test"},
+                auth=auth
+            )
+            
+            user_limit_headers = {}
+            for header, value in response.headers.items():
+                if any(keyword in header.lower() for keyword in ['limit', 'rate']):
+                    user_limit_headers[header] = value
+            
+            if user_limit_headers:
+                print("   ✅ User-level rate limit headers:")
+                for header, value in user_limit_headers.items():
+                    print(f"      • {header}: {value}")
+                    
+                # Specifically highlight the daily tweet limit
+                if 'x-user-limit-24hour-limit' in response.headers:
+                    daily_limit = response.headers['x-user-limit-24hour-limit']
+                    remaining = response.headers.get('x-user-limit-24hour-remaining', 'N/A')
+                    print(f"\n   🎯 YOUR TWEET LIMIT: {remaining}/{daily_limit} tweets per day")
+                    
+                    # Determine tier based on daily limit
+                    daily_limit_int = int(daily_limit)
+                    if daily_limit_int == 100:
+                        print("   📊 Account Tier: FREE (This is why you're limited!)")
+                        print("   💡 Even with a production app, you need Basic+ subscription")
+                    elif daily_limit_int >= 3000:
+                        print("   📊 Account Tier: BASIC or higher ✅")
+                    else:
+                        print(f"   📊 Account Tier: Unknown (limit: {daily_limit_int})")
+            
+        except Exception as e:
+            print(f"   ❌ Error checking user limits: {e}")
+        
+        print("\n💡 KEY INSIGHT:")
+        print("   Your app might have high app-level limits (like 1667),")
+        print("   but posting tweets ALWAYS uses user-level limits!")
+        print("   To increase tweet limits, upgrade your Twitter account subscription.")
+            
     def quick_status(self):
         """Quick status check - when can post again"""
         print("\n⏰ POSTING STATUS\n")
@@ -259,6 +343,86 @@ class TwitterAPITest:
         except Exception as e:
             print(f"❌ Error: {e}")
 
+    def check_subscription_status(self):
+        """Check if paid subscription is properly applied"""
+        print("💳 SUBSCRIPTION STATUS CHECK\n")
+        
+        print("Expected Basic API limits:")
+        print("   • 3,000 tweets per day (minimum)")
+        print("   • 50,000+ read requests per month")
+        print("   • Should see x-user-limit-24hour-limit >= 3000")
+        
+        try:
+            auth = OAuth1(self.api_key, self.api_secret, self.access_token, self.access_token_secret)
+            response = requests.post(
+                "https://api.twitter.com/2/tweets",
+                json={"text": "Subscription test"},
+                auth=auth
+            )
+            
+            print(f"\nActual limits detected:")
+            if 'x-user-limit-24hour-limit' in response.headers:
+                daily_limit = int(response.headers['x-user-limit-24hour-limit'])
+                remaining = response.headers.get('x-user-limit-24hour-remaining', 'N/A')
+                
+                print(f"   • Daily tweet limit: {daily_limit}")
+                print(f"   • Remaining today: {remaining}")
+                
+                if daily_limit == 100:
+                    print("\n❌ PROBLEM DETECTED!")
+                    print("   You're paying for Basic ($194.25) but getting Free limits!")
+                    print("\n🔧 POSSIBLE FIXES:")
+                    print("   1. Check if subscription is applied to the RIGHT account")
+                    print("   2. Verify your API keys are from the PAYING account") 
+                    print("   3. Contact Twitter Support - you're not getting what you paid for")
+                    print("   4. Check if subscription needs time to activate")
+                    
+                elif daily_limit >= 3000:
+                    print("\n✅ Subscription working correctly!")
+                    print("   You have Basic tier limits as expected")
+                    
+                else:
+                    print(f"\n🤔 Unusual limit detected: {daily_limit}")
+                    print("   This doesn't match standard Free (100) or Basic (3000+) tiers")
+            
+            # Check account details
+            print(f"\n📊 Full account diagnostics:")
+            print(f"   • API Key starts with: {self.api_key[:10]}...")
+            
+            # Get account info
+            client = tweepy.Client(
+                consumer_key=self.api_key,
+                consumer_secret=self.api_secret,
+                access_token=self.access_token,
+                access_token_secret=self.access_token_secret
+            )
+            
+            me = client.get_me()
+            if me.data:
+                print(f"   • Authenticated as: @{me.data.username}")
+                print(f"   • User ID: {me.data.id}")
+                print("\n💡 Make sure this matches the account you paid for!")
+                
+        except Exception as e:
+            print(f"❌ Error checking subscription: {e}")
+            
+    def run_subscription_diagnosis(self):
+        """Run focused subscription diagnosis"""
+        print("🔍 TWITTER SUBSCRIPTION DIAGNOSIS\n")
+        print("Issue: Paying for Basic API but getting Free tier limits\n")
+        
+        self.check_subscription_status()
+        
+        print("\n" + "="*60)
+        print("NEXT STEPS:")
+        print("1. Verify the API keys belong to your paying account")
+        print("2. Check Twitter Developer Portal subscription status")
+        print("3. If still wrong, contact Twitter Support with:")
+        print("   - Your invoice/receipt") 
+        print("   - Your app ID")
+        print("   - Screenshots of the limit headers")
+        print("="*60)
+
 def main():
     """Main function"""
     import sys
@@ -267,6 +431,10 @@ def main():
         # Quick status check
         test = TwitterAPITest()
         test.quick_status()
+    elif len(sys.argv) > 1 and sys.argv[1] == 'subscription':
+        # Subscription diagnosis
+        test = TwitterAPITest()
+        test.run_subscription_diagnosis()
     else:
         # Full test suite
         test = TwitterAPITest()
@@ -274,6 +442,7 @@ def main():
         
         print("\n" + "="*60)
         print("For quick status check, run: python twitter_api_test.py status")
+        print("For subscription diagnosis, run: python twitter_api_test.py subscription")
 
 if __name__ == "__main__":
     main() 

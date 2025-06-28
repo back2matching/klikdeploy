@@ -307,7 +307,7 @@ class TwitterMonitor:
                 self.logger.info(f"Found {len(parent_media)} images in parent tweet")
         
         # Check if this is a verification tweet first
-        verification_result = await self._check_verification_tweet(text, username)
+        verification_result = await self._check_verification_tweet(text, username, processed_data['in_reply_to_status_id'])
         if verification_result:
             print(f"\n🔐 {verification_result}")
             print(f"✅ Processed verification in {time.time() - start_time:.1f}s total")
@@ -578,7 +578,7 @@ class TwitterMonitor:
                     })
         return media_list
     
-    async def _check_verification_tweet(self, text: str, username: str) -> str:
+    async def _check_verification_tweet(self, text: str, username: str, in_reply_to_status_id: str = None) -> str:
         """Check if this is a verification tweet and process it"""
         import re
         import sqlite3
@@ -589,6 +589,12 @@ class TwitterMonitor:
         
         if not match:
             return None
+        
+        # SECURITY: Only process verification tweets that are NOT replies
+        # This prevents people from using replies to try to exploit the system
+        if in_reply_to_status_id:
+            self.logger.warning(f"Ignoring verification attempt in reply from @{username}: {text[:100]}")
+            return f"🔒 Verification must be a direct tweet (not a reply). Please tweet directly: @DeployOnKlik !verify user [CODE] in order to use start claiming fees from @{username}"
         
         verification_code = match.group(1).upper()
         claimed_username = match.group(2).lower()

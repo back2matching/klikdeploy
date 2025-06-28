@@ -1852,6 +1852,11 @@ async def start_twitter_verification(update: Update, context: ContextTypes.DEFAU
         f"══════════════════════\n"
         f"Copy and tweet the following from @{safe_twitter}:\n\n"
         f"`@DeployOnKlik !verify user {verification_code} in order to use start claiming fees from @{twitter_username}`\n\n"
+        f"**⚠️ IMPORTANT: Must be a direct tweet**\n"
+        f"══════════════════════\n"
+        f"• Do NOT reply to another tweet\n"
+        f"• Do NOT mention other users\n"
+        f"• Post as a standalone tweet only\n\n"
         f"**Step 2: Wait for confirmation**\n"
         f"══════════════════════\n"
         f"After tweeting, click 'Check Verification'\n\n"
@@ -1916,9 +1921,10 @@ async def check_verification_status(update: Update, context: ContextTypes.DEFAUL
         f"`@DeployOnKlik !verify user {verification_code} in order to use start claiming fees from @{twitter_username}`\n\n"
         f"**Status:** Not found yet\n\n"
         f"**Instructions:**\n"
-        f"1. Tweet the exact message above\n"
-        f"2. Wait 30-60 seconds for processing\n"
-        f"3. Click 'Check Again'\n\n"
+        f"1. Tweet the exact message above as a DIRECT TWEET\n"
+        f"2. Do NOT reply to other tweets or mention others\n"
+        f"3. Wait 30-60 seconds for processing\n"
+        f"4. Click 'Check Again'\n\n"
         f"**Note:** Verification is fully automated! Our system monitors Twitter in real-time.",
         reply_markup
     )
