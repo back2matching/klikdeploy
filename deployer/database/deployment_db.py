@@ -5,7 +5,7 @@ Database operations for deployment tracking and user management
 import sqlite3
 import logging
 from datetime import datetime, timedelta
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, List
 import os
 
 # Configure SQLite to handle datetime properly for Python 3.12+
@@ -292,17 +292,25 @@ class DeploymentDatabase:
                 WHERE LOWER(username) = LOWER(?) 
                 AND requested_at > ? 
                 AND status = 'success'
-                AND (
-                    token_address IN (
-                        SELECT token_address FROM deployments 
-                        WHERE status = 'success'
-                        GROUP BY username, date(requested_at)
-                        HAVING COUNT(*) = 1
-                    )
-                )
             ''', (username, seven_days_ago))
             
             actual_free_deploys_7d = cursor.fetchone()[0]
+            
+            # Get list of recent deployments for debugging
+            cursor = conn.execute('''
+                SELECT token_symbol, deployed_at 
+                FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at > ? 
+                AND status = 'success'
+                ORDER BY deployed_at DESC
+                LIMIT 5
+            ''', (username, seven_days_ago))
+            
+            recent_deploys = cursor.fetchall()
+            if recent_deploys:
+                deploy_list = ", ".join([f"${symbol}" for symbol, _ in recent_deploys])
+                self.logger.info(f"@{username} has {actual_free_deploys_7d} deploys in 7d: {deploy_list}")
             
             # Update the count if different
             if actual_free_deploys_7d != free_deploys_7d:
@@ -526,4 +534,59 @@ class DeploymentDatabase:
             ''', (username,))
             
             result = cursor.fetchone()
-            return result if result else None 
+            return result if result else None
+    
+    def get_recent_deployments(self, username: str, days: int = 7) -> List[Tuple[str, datetime]]:
+        """Get user's recent successful deployments
+        
+        Returns:
+            List of (token_symbol, deployed_at) tuples
+        """
+        since = datetime.now() - timedelta(days=days)
+        
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+            cursor = conn.execute('''
+                SELECT token_symbol, deployed_at 
+                FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at > ? 
+                AND status = 'success' 
+                AND token_address IS NOT NULL
+                ORDER BY deployed_at DESC 
+                LIMIT 10
+            ''', (username, since))
+            
+            return cursor.fetchall()
+    
+    def cleanup_expired_cooldowns(self) -> int:
+        """Clean up expired cooldowns and fix any incorrect cooldown periods
+        
+        Returns:
+            Number of cooldowns cleaned up
+        """
+        now = datetime.now()
+        
+        with sqlite3.connect(self.db_path) as conn:
+            # First, clear any expired cooldowns
+            cursor = conn.execute('''
+                UPDATE deployment_cooldowns 
+                SET cooldown_until = NULL, consecutive_days = 0
+                WHERE cooldown_until < ?
+            ''', (now,))
+            
+            expired_count = cursor.rowcount
+            
+            # Fix any cooldowns longer than 7 days (old system)
+            seven_days_from_now = now + timedelta(days=7)
+            cursor = conn.execute('''
+                UPDATE deployment_cooldowns 
+                SET cooldown_until = ?
+                WHERE cooldown_until > ?
+            ''', (seven_days_from_now, seven_days_from_now))
+            
+            fixed_count = cursor.rowcount
+            
+            if expired_count + fixed_count > 0:
+                self.logger.info(f"Cleaned up {expired_count} expired cooldowns, fixed {fixed_count} excessive cooldowns")
+            
+            return expired_count + fixed_count 

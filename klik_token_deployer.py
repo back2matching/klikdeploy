@@ -96,6 +96,11 @@ class KlikTokenDeployer:
         self.ipfs_service = IPFSService()
         self.db = DeploymentDatabase(self.db_path)
         
+        # Clean up any expired or excessive cooldowns from old system
+        cleaned = self.db.cleanup_expired_cooldowns()
+        if cleaned > 0:
+            print(f"🧹 Cleaned up {cleaned} old/expired cooldowns")
+        
         print("🚀 KLIK FINANCE TWITTER DEPLOYER v2.0")
         print("=" * 50)
         print("💰 Deploy tokens via Twitter mentions")
@@ -1651,6 +1656,34 @@ You sent: Missing $"""
         self.twitter_reply_history = []
         print(f"🧹 Cleared {old_count} Twitter reply timestamps from rate limit tracking")
         return old_count
+    
+    def debug_user_deployments(self, username: str):
+        """Debug a user's deployment history and cooldown status"""
+        print(f"\n🔍 DEBUG: Deployment status for @{username}")
+        print("=" * 60)
+        
+        # Check cooldown status
+        can_deploy, msg, cooldown_days = self.db.check_progressive_cooldown(username)
+        print(f"Cooldown Status: {'✅ Can deploy' if can_deploy else '❌ In cooldown'}")
+        print(f"Message: {msg}")
+        if cooldown_days > 0:
+            print(f"Days remaining: {cooldown_days}")
+        
+        # Get recent deployments
+        recent = self.db.get_recent_deployments(username, days=7)
+        print(f"\nLast 7 days deployments: {len(recent)}")
+        for symbol, deployed_at in recent:
+            print(f"  - ${symbol} at {deployed_at.strftime('%Y-%m-%d %H:%M')}")
+        
+        # Check holder status
+        is_holder = self.check_holder_status(username)
+        print(f"\nHolder Status: {'🎯 YES' if is_holder else '❌ NO'}")
+        
+        # Check balance
+        balance = self.get_user_balance(username)
+        print(f"ETH Balance: {balance:.4f} ETH")
+        
+        print("=" * 60)
 
     async def start_realtime_monitoring(self):
         """Start real-time monitoring using TwitterMonitor"""
@@ -1988,7 +2021,20 @@ Status: t.me/DeployOnKlik"""
                     # User has used all 3 free deploys this week
                     cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
                     days = cooldown_match.group(1) if cooldown_match else "7"
-                    reply_text = f"""@{username} Weekly limit reached! (3 free/week)
+                    
+                    # Get their recent deployments to show
+                    recent_deploys = self.db.get_recent_deployments(username, days=7)
+                    if recent_deploys:
+                        deploy_list = ", ".join([f"${d[0]}" for d in recent_deploys[:3]])
+                        reply_text = f"""@{username} Weekly limit reached! (3 free/week)
+
+This week: {deploy_list}
+Wait {days} days OR:
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 10/week"""
+                    else:
+                        # Fallback if no deployments found
+                        reply_text = f"""@{username} Weekly limit reached! (3 free/week)
 
 Wait {days} days OR:
 💰 Deposit ETH: t.me/DeployOnKlik
