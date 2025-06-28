@@ -2174,11 +2174,11 @@ Learn the rules: t.me/DeployOnKlik"""
                         actual_count = len(recent_deploys)
                         deploys_to_show = recent_deploys[:3]  # Show up to 3
                         
-                        # ALWAYS show full DexScreener links
+                        # ALWAYS show full DexScreener links with ticker
                         deploy_lines = []
                         for symbol, address, _ in deploys_to_show:
                             if address:
-                                deploy_lines.append(f"https://dexscreener.com/ethereum/{address}")
+                                deploy_lines.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
                             else:
                                 deploy_lines.append(f"${symbol} (no address)")
                         
@@ -2227,18 +2227,18 @@ Or deposit ETH: t.me/DeployOnKlik"""
                         symbol, address, _ = recent_deploys[0]
                         reply_text = f"""@{username} You already deployed ${symbol}!
 
-📈 https://dexscreener.com/ethereum/{address}
+${symbol}: https://dexscreener.com/ethereum/{address}
 
 Want more? (3/week limit)
 💰 Deposit: t.me/DeployOnKlik
 🎯 Hold $DOK for 10/week"""
                     else:
-                        # Multiple deployments - show full DexScreener links
+                        # Multiple deployments - show full DexScreener links with ticker
                         deploy_count = len(recent_deploys[:3])
                         deploy_lines = []
                         for symbol, address, _ in recent_deploys[:3]:
                             if address:
-                                deploy_lines.append(f"https://dexscreener.com/ethereum/{address}")
+                                deploy_lines.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
                             else:
                                 deploy_lines.append(f"${symbol} (no address)")
                         
