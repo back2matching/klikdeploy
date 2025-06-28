@@ -332,7 +332,34 @@ class DeploymentDatabase:
             
             # Progressive cooldown logic - RELAXED FOR NEW SYSTEM
             # Free users get 3 per week, so only apply cooldown after exceeding that
-            if free_deploys_7d >= 4:  # 4+ deploys in 7 days = exceeded weekly limit
+            
+            # Count deployments today
+            today_start = datetime.combine(now.date(), datetime.min.time())
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at >= ? 
+                AND status = 'success'
+            ''', (username, today_start))
+            
+            deploys_today = cursor.fetchone()[0]
+            
+            # Debug logging
+            self.logger.info(f"@{username} deployment check: {deploys_today} today, {actual_free_deploys_7d} this week")
+            
+            # ANTI-SPAM: 4+ deploys in ONE DAY = serious spam = 30 day cooldown
+            if deploys_today >= 3:  # Already did 3 today, trying for 4th
+                # Apply 30-day cooldown for serious spam
+                cooldown_end = now + timedelta(days=30)
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (cooldown_end, consecutive_days, now, username))
+                return False, "SPAM DETECTED: 4+ deploys in one day. 30-day cooldown applied", 30
+            
+            # Weekly limit check (less severe)
+            elif free_deploys_7d >= 3:  # 3+ deploys in 7 days = used weekly allowance
                 # Apply 7-day cooldown for exceeding weekly limit
                 cooldown_end = now + timedelta(days=7)
                 conn.execute('''
@@ -341,16 +368,6 @@ class DeploymentDatabase:
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
                 return False, "Weekly limit exceeded (3 free/week). 7-day cooldown applied", 7
-                
-            elif free_deploys_7d >= 3 and last_free_deploy and last_free_deploy.date() == now.date():  # 3 deploys in same day
-                # Apply 3-day cooldown for rapid deployment spam
-                cooldown_end = now + timedelta(days=3)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Rapid deployment detected (3 in one day). 3-day cooldown applied", 3
             
             # Update last deployment time
             conn.execute('''
@@ -360,7 +377,9 @@ class DeploymentDatabase:
             ''', (consecutive_days, now, username))
             
             # More informative message about limits
-            if free_deploys_7d == 2:
+            if deploys_today >= 2:
+                return True, f"⚠️ Deployment allowed (2/3 today - ONE MORE and you'll get 30-day spam timeout!)", 0
+            elif free_deploys_7d == 2:
                 return True, f"Deployment allowed (2/3 free used this week)", 0
             elif free_deploys_7d == 1:
                 return True, f"Deployment allowed (1/3 free used this week)", 0
@@ -576,13 +595,13 @@ class DeploymentDatabase:
             
             expired_count = cursor.rowcount
             
-            # Fix any cooldowns longer than 7 days (old system)
-            seven_days_from_now = now + timedelta(days=7)
+            # Fix any cooldowns longer than 30 days (old system max)
+            thirty_days_from_now = now + timedelta(days=30)
             cursor = conn.execute('''
                 UPDATE deployment_cooldowns 
                 SET cooldown_until = ?
                 WHERE cooldown_until > ?
-            ''', (seven_days_from_now, seven_days_from_now))
+            ''', (thirty_days_from_now, thirty_days_from_now))
             
             fixed_count = cursor.rowcount
             

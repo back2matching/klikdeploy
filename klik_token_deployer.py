@@ -562,7 +562,17 @@ class KlikTokenDeployer:
                     return True, f"💰 Pay-per-deploy ({cooldown_msg.lower()}. Cost: {total_cost:.4f} ETH)"
                 else:
                     # Cannot deploy at all - now with relaxed cooldowns
-                    if cooldown_days >= 7:
+                    if cooldown_days >= 30:
+                        # Serious spam - 30 day cooldown
+                        return False, f"""🚫 SPAM COOLDOWN: 30-DAY TIMEOUT!
+
+You attempted 4+ deployments in ONE DAY.
+This is considered abuse of the free tier.
+
+Cooldown ends: {cooldown_days} days
+
+Learn more: t.me/DeployOnKlik"""
+                    elif cooldown_days >= 7:
                         # Weekly limit exceeded
                         return False, f"""⏳ COOLDOWN: Weekly limit exceeded!
 
@@ -573,11 +583,8 @@ Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
 🎯 Or hold 5M+ $DOK for 10/week"""
                     else:
-                        # Rapid deployment cooldown (3 days max)
-                        return False, f"""⏳ COOLDOWN: 3 deployments in one day!
-
-That's all your free deploys at once!
-Wait: {cooldown_days} days
+                        # Should not happen with new system
+                        return False, f"""⏳ COOLDOWN: Please wait {cooldown_days} days
 
 Want to deploy NOW?
 💰 Deposit ETH: t.me/DeployOnKlik
@@ -2017,7 +2024,15 @@ Please try again in a few minutes ⏳
 Status: t.me/DeployOnKlik"""
             elif "COOLDOWN" in instructions:
                 # Handle new progressive cooldown messages
-                if "Weekly limit exceeded" in instructions:
+                if "SPAM DETECTED" in instructions:
+                    # User tried 4+ deploys in one day - serious spam
+                    reply_text = f"""@{username} SPAM DETECTED! 🚫
+
+4+ deploys in ONE DAY is abuse.
+30-day timeout applied.
+
+Learn the rules: t.me/DeployOnKlik"""
+                elif "Weekly limit exceeded" in instructions:
                     # User has used all 3 free deploys this week
                     cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
                     days = cooldown_match.group(1) if cooldown_match else "7"
@@ -2036,16 +2051,6 @@ Wait {days} days OR:
                         # Fallback if no deployments found
                         reply_text = f"""@{username} Weekly limit reached! (3 free/week)
 
-Wait {days} days OR:
-💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Hold 5M+ $DOK for 10/week"""
-                elif "Rapid deployment detected" in instructions:
-                    # User deployed 3 times in one day
-                    cooldown_match = re.search(r'Wait: (\d+) days', instructions)
-                    days = cooldown_match.group(1) if cooldown_match else "3"
-                    reply_text = f"""@{username} 3 deploys in one day! 🚀
-
-That's your whole week at once!
 Wait {days} days OR:
 💰 Deposit ETH: t.me/DeployOnKlik
 🎯 Hold 5M+ $DOK for 10/week"""
