@@ -322,26 +322,27 @@ class DeploymentDatabase:
                 # Reset consecutive days
                 consecutive_days = 0
             
-            # Progressive cooldown logic - MUCH MORE RESTRICTIVE
-            if free_deploys_7d >= 2:  # 2+ deploys in 7 days = immediate long cooldown
-                # Apply 30-day cooldown for heavy usage
-                cooldown_end = now + timedelta(days=30)
+            # Progressive cooldown logic - RELAXED FOR NEW SYSTEM
+            # Free users get 3 per week, so only apply cooldown after exceeding that
+            if free_deploys_7d >= 4:  # 4+ deploys in 7 days = exceeded weekly limit
+                # Apply 7-day cooldown for exceeding weekly limit
+                cooldown_end = now + timedelta(days=7)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Multiple free deployments detected. 30-day cooldown applied", 30
+                return False, "Weekly limit exceeded (3 free/week). 7-day cooldown applied", 7
                 
-            elif free_deploys_7d >= 1 and consecutive_days >= 2:  # Deployed yesterday AND today
-                # Apply 14-day cooldown for back-to-back usage
-                cooldown_end = now + timedelta(days=14)
+            elif free_deploys_7d >= 3 and last_free_deploy and last_free_deploy.date() == now.date():  # 3 deploys in same day
+                # Apply 3-day cooldown for rapid deployment spam
+                cooldown_end = now + timedelta(days=3)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Back-to-back deployments detected. 14-day cooldown applied", 14
+                return False, "Rapid deployment detected (3 in one day). 3-day cooldown applied", 3
             
             # Update last deployment time
             conn.execute('''
@@ -351,8 +352,10 @@ class DeploymentDatabase:
             ''', (consecutive_days, now, username))
             
             # More informative message about limits
-            if free_deploys_7d == 1:
-                return True, f"Deployment allowed (1 free used this week - next free deploy triggers 30-day cooldown)", 0
+            if free_deploys_7d == 2:
+                return True, f"Deployment allowed (2/3 free used this week)", 0
+            elif free_deploys_7d == 1:
+                return True, f"Deployment allowed (1/3 free used this week)", 0
             else:
                 return True, f"Deployment allowed (first free this week)", 0
     
