@@ -555,7 +555,23 @@ class KlikTokenDeployer:
                 else:
                     # Cannot deploy at all - BE VERY CLEAR about the new system
                     if cooldown_days >= 30:
-                        return False, f"""⏳ COOLDOWN: You used your FREE deploy this week!
+                        # Get user's last deployment to show them
+                        last_deployment = self.db.get_last_successful_deployment(username)
+                        
+                        if last_deployment:
+                            token_symbol_last, token_address = last_deployment
+                            return False, f"""⏳ COOLDOWN: You already deployed ${token_symbol_last}!
+
+📈 dexscreener.com/ethereum/{token_address}
+
+Next free deploy: {cooldown_days} days
+~1 free deploy per week
+
+Want to deploy NOW? 
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Or hold 5M+ $DOK for 3/week"""
+                        else:
+                            return False, f"""⏳ COOLDOWN: You used your FREE deploy this week!
 
 Next free deploy: {cooldown_days} days
 New limit: ~1 free deploy per week
@@ -1979,10 +1995,31 @@ Please try again in a few minutes ⏳
 Status: t.me/DeployOnKlik"""
             elif "COOLDOWN" in instructions:
                 # Handle new progressive cooldown messages
-                if "You used your FREE deploy this week" in instructions:
-                    cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
-                    days = cooldown_match.group(1) if cooldown_match else "30"
-                    reply_text = f"""@{username} Weekly free deploy used! ⏳
+                if "You used your FREE deploy this week" in instructions or "You already deployed" in instructions:
+                    # Extract token info from the instructions if available
+                    token_match = re.search(r'already deployed \$(\w+)!', instructions)
+                    dexscreener_match = re.search(r'dexscreener\.com/ethereum/(0x[a-fA-F0-9]{40})', instructions)
+                    
+                    if token_match and dexscreener_match:
+                        # We have the token info in the instructions
+                        token_symbol = token_match.group(1)
+                        token_address = dexscreener_match.group(1)
+                        
+                        cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
+                        days = cooldown_match.group(1) if cooldown_match else "30"
+                        
+                        reply_text = f"""@{username} You already deployed ${token_symbol}! 
+
+📈 dexscreener.com/ethereum/{token_address}
+
+Wait {days} days OR:
+💰 Deposit ETH: t.me/DeployOnKlik
+🎯 Hold 5M+ $DOK for 3/week"""
+                    else:
+                        # Fallback if no token info in instructions
+                        cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
+                        days = cooldown_match.group(1) if cooldown_match else "30"
+                        reply_text = f"""@{username} Weekly free deploy used! ⏳
 
 Wait {days} days OR:
 💰 Deposit ETH: t.me/DeployOnKlik
