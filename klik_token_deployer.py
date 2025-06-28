@@ -2016,7 +2016,7 @@ Deposit ETH for any gas: t.me/DeployOnKlik"""
 
 You have: {follower_count}
 Or deposit ETH: t.me/DeployOnKlik"""
-            elif "already used your free deployment" in instructions:
+            elif "already used your free deployment" in instructions or "already deployed" in instructions:
                 # Get user's last deployment to show them
                 last_deployment = self.db.get_last_successful_deployment(username)
                 
