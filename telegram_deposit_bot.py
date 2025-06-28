@@ -9,6 +9,7 @@ import logging
 from datetime import datetime, timedelta
 import sqlite3
 import asyncio
+import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from web3 import Web3
@@ -39,6 +40,49 @@ RPC_URL = os.getenv('ALCHEMY_RPC_URL')
 # Initialize Web3
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 account = Account.from_key(PRIVATE_KEY)
+
+def escape_markdown(text: str) -> str:
+    """Escape special characters for Telegram Markdown V2"""
+    # Characters that need escaping in Markdown
+    escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    
+    return text
+
+async def safe_send_message(update, message: str, reply_markup=None, parse_mode='Markdown'):
+    """Safely send a message with fallback for parsing errors"""
+    try:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                message, 
+                reply_markup=reply_markup, 
+                parse_mode=parse_mode
+            )
+        else:
+            await update.message.reply_text(
+                message, 
+                reply_markup=reply_markup, 
+                parse_mode=parse_mode
+            )
+    except telegram.error.BadRequest as e:
+        if "Can't parse entities" in str(e):
+            # Fallback: send without Markdown formatting
+            logger.warning(f"Markdown parsing failed, sending plain text: {e}")
+            if update.callback_query:
+                await update.callback_query.edit_message_text(
+                    message.replace('**', '').replace('`', ''), 
+                    reply_markup=reply_markup
+                )
+            else:
+                await update.message.reply_text(
+                    message.replace('**', '').replace('`', ''), 
+                    reply_markup=reply_markup
+                )
+        else:
+            # Re-raise other errors
+            raise
 
 # Initialize database (using same one as Twitter bot)
 def init_db():
@@ -378,10 +422,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    if update.callback_query:
-        await update.callback_query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(message, reply_markup=reply_markup, parse_mode='Markdown')
+    await safe_send_message(update, message, reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle button presses"""
@@ -615,16 +656,49 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🔗 Link Twitter", callback_data="link_twitter")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
+        await safe_send_message(update,
             "**Missing username!**\n\n"
             "Try: `/link yourusername`\n"
             "(without the @ symbol)",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
+            reply_markup
         )
         return
     
-    twitter_username = context.args[0].replace('@', '').lower()
+    # Clean and validate Twitter username
+    raw_input = context.args[0].strip()
+    
+    # Remove common prefixes/suffixes
+    twitter_username = raw_input.replace('@', '')
+    
+    # Handle URLs (extract username from x.com or twitter.com links)
+    if 'x.com/' in twitter_username or 'twitter.com/' in twitter_username:
+        # Extract username from URL
+        import re
+        url_match = re.search(r'(?:x\.com|twitter\.com)/([^/?]+)', twitter_username)
+        if url_match:
+            twitter_username = url_match.group(1)
+        else:
+            await safe_send_message(update,
+                "❌ **Invalid Twitter URL!**\n\n"
+                "Please provide just your username:\n"
+                "`/link yourusername`\n"
+                "(without @ symbol or URLs)"
+            )
+            return
+    
+    # Validate username format (alphanumeric, underscore, max 15 chars)
+    if not re.match(r'^[a-zA-Z0-9_]{1,15}$', twitter_username):
+        await safe_send_message(update,
+            "❌ **Invalid Twitter username!**\n\n"
+            "Username must be:\n"
+            "• 1-15 characters\n"
+            "• Letters, numbers, underscore only\n"
+            "• No spaces or special characters\n\n"
+            "Try: `/link yourusername`"
+        )
+        return
+    
+    twitter_username = twitter_username.lower()
     telegram_id = update.effective_user.id
     
     conn = sqlite3.connect('deployments.db')
@@ -648,10 +722,10 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if username_taken and username_taken[0]:
             # Username is taken by another active user
-            await update.message.reply_text(
-                f"❌ **@{twitter_username} is already linked to another Telegram account!**\n\n"
-                f"Each Twitter account can only be linked to one Telegram user.",
-                parse_mode='Markdown'
+            safe_username = escape_markdown(twitter_username)
+            await safe_send_message(update,
+                f"❌ **@{safe_username} is already linked to another Telegram account!**\n\n"
+                f"Each Twitter account can only be linked to one Telegram user."
             )
             return
         
@@ -660,9 +734,9 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
             old_username = current_user[1]
             
             if old_username == twitter_username:
-                await update.message.reply_text(
-                    f"ℹ️ **You're already linked to @{twitter_username}**",
-                    parse_mode='Markdown'
+                safe_username = escape_markdown(twitter_username)
+                await safe_send_message(update,
+                    f"ℹ️ **You're already linked to @{safe_username}**"
                 )
                 return
             
@@ -740,23 +814,22 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton("💳 Register Wallet", callback_data="register_wallet")]]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(message_text, parse_mode='Markdown', reply_markup=reply_markup)
+        await safe_send_message(update, message_text, reply_markup)
         
     except sqlite3.IntegrityError as e:
         logger.error(f"Database integrity error: {e}")
-        await update.message.reply_text(
+        safe_username = escape_markdown(twitter_username)
+        await safe_send_message(update,
             f"❌ **Database error!**\n\n"
-            f"Could not update to @{twitter_username}.\n"
+            f"Could not update to @{safe_username}.\n"
             f"This username may be corrupted in the database.\n\n"
-            f"Please contact support or try a different username.",
-            parse_mode='Markdown'
+            f"Please contact support or try a different username."
         )
     except Exception as e:
         logger.error(f"Error linking Twitter: {e}")
-        await update.message.reply_text(
+        await safe_send_message(update,
             f"❌ **An error occurred!**\n\n"
-            f"Please try again or contact support.",
-            parse_mode='Markdown'
+            f"Please try again or contact support."
         )
     finally:
         conn.close()
