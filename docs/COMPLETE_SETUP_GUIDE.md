@@ -4,9 +4,10 @@
 
 Users tweet `@DeployOnKlik $TOKEN` → Bot deploys tokens on Ethereum in 1-3 seconds
 
-- **FREE** when gas ≤ 3 gwei (~1/week limit, 1500+ followers)
-- **PAID** when gas > 3 gwei (deposit ETH first)
-- **$DOK HOLDERS** get 3 free deploys/week with NO FEES (5M+ DOK)
+### Tier System:
+- **FREE TIER** (250+ followers): 3 deploys/week ≤2 gwei (VIP 20k+ followers: ≤6 gwei)
+- **HOLDER TIER** (5M+ $DOK): 10 deploys/week ≤10 gwei + NO FEES
+- **PAY-PER-DEPLOY**: Any gas price, anytime (deposit ETH first)
 
 ## Quick Start - Run Both Bots Together
 
@@ -29,19 +30,20 @@ python telegram_deposit_bot.py
 
 ## How The System Works
 
-### Free Deployment Limits (NEW - More Restrictive!)
+### Free Deployment Limits (NEW - More Generous!)
 
-To prevent abuse and reduce gas waste, free deployments are now LIMITED:
+To balance accessibility with spam prevention:
 
-- **1st free deploy in 7 days**: ✅ Allowed
-- **2nd free deploy within 7 days**: ❌ 30-day cooldown applied
-- **Back-to-back deploys**: ❌ 14-day cooldown applied
+- **Free Tier (250+ followers)**: 3 deploys/week when gas ≤2 gwei
+- **VIP Free Tier (20k+ followers)**: 3 deploys/week when gas ≤6 gwei
+- **Anti-spam**: 4+ deploys in ONE DAY = 30-day cooldown (serious abuse)
+- **Weekly reset**: After using 3 free deploys, wait 7 days for more
 
-**Effectively: You get ~1 free deployment per week**
+**You get 3 free deployments per week!**
 
 Want more deployments? Either:
-1. **Become a $DOK holder** (5M+ tokens) → 2 free/week up to 15 gwei
-2. **Use pay-per-deploy** → Deposit ETH for unlimited deployments
+1. **Become a $DOK holder** (5M+ tokens) → 10 free/week up to 10 gwei + NO FEES
+2. **Use pay-per-deploy** → Deposit ETH for unlimited deployments at any gas
 
 ### For New Users
 
@@ -144,9 +146,10 @@ To become a holder, buy 5,000,000+ DOK tokens:
 - **Buy**: [DexScreener](https://dexscreener.com/ethereum/0x69ca61398eca94d880393522c1ef5c3d8c058837)
 
 Benefits:
-- 3 FREE deploys/week (gas ≤ 15 gwei)
+- **10 FREE deploys/week** (gas ≤ 10 gwei)
 - **NO FEES** (save 0.01 ETH per deploy)
-- Works even when gas is high!
+- Works even when gas is moderately high!
+- Priority support
 
 Check holder status:
 - Telegram bot: Click "🎯 Check $DOK Holder"
@@ -171,7 +174,7 @@ Check holder status:
 ### Twitter bot not responding
 - Check TwitterAPI.io dashboard
 - Verify filter rules include @DeployOnKlik (or current bot username)
-- Ensure 1,500+ followers requirement is met
+- Ensure 250+ followers requirement is met (check VIP status at 20k+)
 
 ### Colors not showing in terminal
 - Windows: Use Windows Terminal (not cmd.exe)
@@ -198,15 +201,19 @@ python run_both.py
 - **Withdrawals**: Only full balance withdrawals supported (not partial amounts)
 - **Bot Username**: Currently set to `mlquantlab` for testing - change to `DeployOnKlik` in production
 - **Self-Protection**: Bot can deploy and reply to its first token only (for testing), then ignores all subsequent own tweets
-- **Follower Requirement**: 1,500+ followers required for ALL deployments (spam protection)
+- **Follower Requirement**: 250+ followers required for free deployments (20k+ for VIP benefits)
 - **Gas Buffer**: Withdrawals add +4 gwei to current gas for fast confirmation
-- **Progressive Cooldowns**: Free users limited to ~1 deploy/week (2nd deploy = 30-day cooldown)
+- **Progressive Cooldowns**: 
+  - 3 free deploys/week allowed
+  - 4+ deploys in ONE DAY = 30-day spam cooldown
+  - After 3 deploys in a week = 7-day cooldown
 - **DOK Protection**: $DOK ticker is reserved and cannot be deployed
 - **Deposit Security**: 
   - Only checks last 30 minutes of transactions
   - Requires 3+ block confirmations
   - Each tx_hash credited only once
   - Startup verification that user balances ≤ wallet balance
+- **Holder Verification**: Must deposit once from your DOK-holding wallet to prove ownership
 
 ## That's It!
 
@@ -217,3 +224,12 @@ Your bot system is now:
 - 📊 Everything tracked in database
 
 Just run `python run_both.py` and you're good to go! 
+
+## Quick Tier Summary
+
+| Tier | Requirements | Weekly Deploys | Gas Limit | Platform Fee |
+|------|-------------|----------------|-----------|--------------|
+| **Free** | 250+ followers | 3 | ≤2 gwei | 0.01 ETH |
+| **VIP Free** | 20k+ followers | 3 | ≤6 gwei | 0.01 ETH |
+| **Holder** | 5M+ $DOK | 10 | ≤10 gwei | 0 ETH |
+| **Pay-per-deploy** | Deposit ETH | Unlimited | Any | 0.01 ETH | 

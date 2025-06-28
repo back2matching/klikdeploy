@@ -102,9 +102,9 @@ Klik Deploy revolutionizes token deployment on Ethereum by enabling users to lau
 
 ### 🆓 FREE Tier
 - **Requirements**: 
-  - Gas ≤ 3 gwei
-  - 1,500+ Twitter followers
-  - 1 deployment per day
+  - Gas ≤ 2 gwei
+  - 250+ Twitter followers
+  - 3 deployments per week
 - **VIP Status**: 20k+ followers get gas ≤ 6 gwei
 - **Cost**: Bot pays all gas fees
 
@@ -112,9 +112,9 @@ Klik Deploy revolutionizes token deployment on Ethereum by enabling users to lau
 - **Requirements**:
   - Hold 5M+ DOK tokens (0.5% of supply)
   - Verify wallet ownership (one-time deposit)
-  - Gas ≤ 15 gwei
+  - Gas ≤ 10 gwei
 - **Benefits**:
-  - 2 FREE deployments daily
+  - 10 FREE deployments per week
   - NO platform fees (save 0.01 ETH)
   - Priority support
 - **Token**: [0x69ca61398eCa94D880393522C1Ef5c3D8c058837](https://dexscreener.com/ethereum/0x69ca61398eca94d880393522c1ef5c3d8c058837)
@@ -229,8 +229,8 @@ TELEGRAM_CHANNEL_ID=@YourChannel
 
 # Bot Configuration
 BOT_USERNAME=DeployOnKlik
-MIN_FOLLOWER_COUNT=1500
-MAX_DEPLOYS_PER_HOUR=10
+MIN_FOLLOWER_COUNT=250
+MAX_DEPLOYS_PER_HOUR=15
 ```
 
 ### Detailed Setup
@@ -312,7 +312,7 @@ Found a security issue? Please email security@klikfinance.com
 - Wait for 3+ confirmations
 
 **"Gas too high"**
-- Free tier only works when gas ≤ 3 gwei
+- Free tier only works when gas ≤ 2 gwei (VIP: ≤ 6 gwei)
 - Deposit ETH for paid deployments
 - Check https://etherscan.io/gastracker
 

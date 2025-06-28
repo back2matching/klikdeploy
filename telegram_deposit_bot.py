@@ -1518,8 +1518,8 @@ async def check_holder_status(update: Update, context: ContextTypes.DEFAULT_TYPE
             
             if deposit_count > 0:
                 message += f"**Your Benefits:**\n"
-                message += f"• 2 FREE deployments daily\n"
-                message += f"• Gas limit: ≤ 15 gwei\n"
+                message += f"• 10 FREE deployments per week\n"
+                message += f"• Gas limit: ≤ 10 gwei\n"
                 message += f"• NO platform fees (save 0.01 ETH)\n"
                 message += f"• Priority support\n\n"
             else:

@@ -2,33 +2,54 @@
 
 All notable changes to the Klik Token Deployer bot system will be documented in this file.
 
+## [2.2.0] - 2025-01-03
+
+### 🎉 Major Tier System Overhaul - More Generous!
+
+#### New Tier System
+- **Free Tier (250+ followers)**: 3 deploys/week ≤2 gwei
+- **VIP Free Tier (20k+ followers)**: 3 deploys/week ≤6 gwei  
+- **Holder Tier (5M+ $DOK)**: 10 deploys/week ≤10 gwei + NO FEES
+
+#### What Changed
+- **Follower requirement**: Reduced from 1500 to 250 (6x easier!)
+- **Free deploys**: Increased from ~1/week to 3/week (3x more!)
+- **Holder benefits**: Massively increased from 3/week to 10/week!
+- **Gas limits**: Free tier 2 gwei, VIP 6 gwei, Holders 10 gwei
+- **Cooldowns**: Relaxed - only 30-day for 4+ deploys in ONE day
+
+#### Why These Changes
+- Make system more accessible to new users
+- Reward holders with significantly better benefits
+- Reduce friction while maintaining anti-spam protection
+- Better differentiation between tiers
+
 ## 📱 Twitter Update Templates
 
-### Latest Update (v2.1.3)
+### Latest Update (v2.2.0)
 ```
-🚨 UPDATE: Holder benefits increased!
+🎉 HUGE UPDATE: More generous tiers!
 
-$DOK holders now get:
-• 3 FREE deploys/week (was 2/week)
-• Up to 15 gwei gas
-• NO platform fees
+NEW LIMITS:
+• Free: 3/week ≤2 gwei (was ~1/week)
+• VIP (20k+): 3/week ≤6 gwei
+• Holders: 10/week ≤10 gwei (was 3/week!)
 
-Free users: ~1/week
-Holders: 3x more deployments!
+EASIER ACCESS:
+• Only need 250+ followers (was 1500!)
 
-Hold 5M+ $DOK (0.5% supply)
+Hold 5M+ $DOK for massive benefits
 CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
 ```
 
 ### Updated Deployment Tiers
 ```
-💎 Deployment Tiers
+💎 NEW Deployment Tiers (Jan 2025)
 
-🆓 FREE Tier
-• ~1 deployment per week max
-• Gas must be ≤3 gwei (≤6 gwei for 20k+ followers)
-• 1500+ 𝕏 followers required
-• Progressive cooldowns
+🆓 FREE Tier (250+ followers)
+• 3 deployments per week
+• Gas must be ≤2 gwei (≤6 gwei for VIP 20k+)
+• 6x easier to qualify!
 
 💰 PPD (Pay-Per-Deploy)
 • Unlimited deployments
@@ -36,8 +57,8 @@ CA: 0x69ca61398eCa94D880393522C1Ef5c3D8c058837
 • Cost: Gas + 0.01 ETH fee
 
 🎯 $DOK Holder Benefits
-• 3 FREE deployments per week (3x free tier!)
-• Works up to 15 gwei gas
+• 10 FREE deployments per week!
+• Works up to 10 gwei gas
 • NO platform fees (save 0.01 ETH)
 • Hold 5M+ $DOK (0.5% of supply)
 ```
