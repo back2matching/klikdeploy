@@ -411,6 +411,219 @@ async def process_single_fee_claim():
         import traceback
         traceback.print_exc()
 
+async def process_multiple_fee_claims():
+    """Process multiple fee claims in a loop"""
+    print("\n🚀 Processing Multiple Fee Claims")
+    print("="*50)
+    
+    processed_count = 0
+    
+    while True:
+        try:
+            # Get recent internal transactions
+            response = requests.post(RPC_URL, json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "alchemy_getAssetTransfers",
+                "params": [{
+                    "fromBlock": "0x0",
+                    "toBlock": "latest",
+                    "toAddress": DEPLOYER_ADDRESS,
+                    "fromAddress": KLIK_FACTORY,
+                    "category": ["internal"],
+                    "excludeZeroValue": True,
+                    "maxCount": "0x64"
+                }]
+            })
+            
+            if response.status_code != 200:
+                print(f"❌ Error fetching transfers: {response.status_code}")
+                break
+                
+            data = response.json()
+            transfers = data.get('result', {}).get('transfers', [])
+            
+            if not transfers:
+                print("❌ No fee claims found")
+                break
+            
+            # Count unprocessed claims
+            conn = sqlite3.connect('deployments.db')
+            unprocessed_count = 0
+            
+            for transfer in reversed(transfers):
+                tx_hash = transfer['hash']
+                cursor = conn.execute(
+                    "SELECT id FROM fee_claims WHERE claim_tx_hash = ?",
+                    (tx_hash,)
+                )
+                if not cursor.fetchone():
+                    unprocessed_count += 1
+            
+            if unprocessed_count == 0:
+                print("\n✅ All fee claims have been processed!")
+                print(f"   Total processed in this session: {processed_count}")
+                conn.close()
+                break
+            
+            print(f"\n📊 Found {unprocessed_count} unprocessed fee claims")
+            conn.close()
+            
+            # Process one claim
+            await process_single_fee_claim()
+            processed_count += 1
+            
+            # Ask if user wants to continue
+            if unprocessed_count > 1:
+                continue_response = input(f"\n🔄 Process next fee claim? ({unprocessed_count - 1} remaining) (yes/no): ").lower()
+                if continue_response != 'yes':
+                    print(f"\n👋 Stopping. Processed {processed_count} claims total.")
+                    break
+            else:
+                print(f"\n✅ All claims processed! Total: {processed_count}")
+                break
+                
+        except KeyboardInterrupt:
+            print(f"\n\n⚠️  Interrupted by user. Processed {processed_count} claims.")
+            break
+        except Exception as e:
+            print(f"\n❌ Error in processing loop: {e}")
+            import traceback
+            traceback.print_exc()
+            break
+
+async def show_unprocessed_summary():
+    """Show summary of all unprocessed fee claims"""
+    print("\n📊 Unprocessed Fee Claims Summary")
+    print("="*50)
+    
+    try:
+        print("Fetching internal transactions...")
+        
+        # Get recent internal transactions
+        response = requests.post(RPC_URL, json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "alchemy_getAssetTransfers",
+            "params": [{
+                "fromBlock": "0x0",
+                "toBlock": "latest",
+                "toAddress": DEPLOYER_ADDRESS,
+                "fromAddress": KLIK_FACTORY,
+                "category": ["internal"],
+                "excludeZeroValue": True,
+                "maxCount": "0x64"  # 100 transfers
+            }]
+        })
+        
+        if response.status_code != 200:
+            print(f"❌ Error fetching transfers: HTTP {response.status_code}")
+            print(f"Response: {response.text[:200]}...")
+            return
+            
+        data = response.json()
+        
+        if 'error' in data:
+            print(f"❌ RPC Error: {data['error']}")
+            return
+            
+        transfers = data.get('result', {}).get('transfers', [])
+        
+        if not transfers:
+            print("❌ No fee claims found from Klik Factory")
+            print(f"   Deployer: {DEPLOYER_ADDRESS}")
+            print(f"   Factory: {KLIK_FACTORY}")
+            return
+        
+        print(f"Found {len(transfers)} total fee claims")
+        
+        # Check database for already processed claims
+        print("Checking database for processed claims...")
+        conn = sqlite3.connect('deployments.db')
+        
+        # Ensure fee_claims table exists
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS fee_claims (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_address TEXT,
+                token_symbol TEXT,
+                token_name TEXT,
+                pool_address TEXT,
+                claimed_amount REAL,
+                buyback_amount REAL,
+                incentive_amount REAL,
+                dev_amount REAL,
+                claim_tx_hash TEXT UNIQUE,
+                buyback_tx_hash TEXT,
+                buyback_dok_amount REAL,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        conn.commit()
+        
+        unprocessed_claims = []
+        total_unprocessed_value = 0.0
+        processed_count = 0
+        
+        for transfer in transfers:
+            tx_hash = transfer['hash']
+            cursor = conn.execute(
+                "SELECT id FROM fee_claims WHERE claim_tx_hash = ?",
+                (tx_hash,)
+            )
+            if not cursor.fetchone():
+                unprocessed_claims.append(transfer)
+                total_unprocessed_value += float(transfer['value'])
+            else:
+                processed_count += 1
+        
+        conn.close()
+        
+        print(f"✅ Analysis complete:")
+        print(f"   Total claims: {len(transfers)}")
+        print(f"   Processed: {processed_count}")
+        print(f"   Unprocessed: {len(unprocessed_claims)}")
+        
+        if not unprocessed_claims:
+            print("\n🎉 All fee claims have been processed!")
+            return
+        
+        print(f"\n💰 Unprocessed value: {total_unprocessed_value:.6f} ETH")
+        print(f"\n📊 Split breakdown:")
+        print(f"   Source token buybacks: {total_unprocessed_value * 0.25:.6f} ETH")
+        print(f"   DOK buybacks: {total_unprocessed_value * 0.25:.6f} ETH")
+        print(f"   Treasury: {total_unprocessed_value * 0.5:.6f} ETH")
+        
+        # Sort by value descending
+        unprocessed_claims.sort(key=lambda x: float(x['value']), reverse=True)
+        
+        print(f"\n📜 Top unprocessed claims (by value):")
+        for i, claim in enumerate(unprocessed_claims[:10]):  # Show top 10
+            print(f"\n{i+1}. TX: {claim['hash']}")
+            print(f"   Amount: {float(claim['value']):.6f} ETH")
+            block_num = int(claim['blockNum'], 16) if isinstance(claim['blockNum'], str) else claim['blockNum']
+            print(f"   Block: {block_num}")
+            
+            # Try to decode to show which token it's from
+            print(f"   Decoding to find token...")
+            decoded = await factory_interface.decode_collect_fee_transaction(claim['hash'])
+            if decoded and decoded.get('token_info'):
+                token_info = decoded['token_info']
+                print(f"   Token: ${token_info.get('symbol', '???')} - {token_info.get('name', 'Unknown')}")
+            elif decoded and decoded.get('deployed_token'):
+                print(f"   Token: {decoded['deployed_token']}")
+            else:
+                print(f"   Token: Unable to decode")
+                
+        if len(unprocessed_claims) > 10:
+            print(f"\n... and {len(unprocessed_claims) - 10} more unprocessed claims")
+            
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 async def debug_transaction():
     """Debug a specific transaction to understand the data"""
     print("\n🔍 Debug Transaction")
@@ -470,24 +683,42 @@ async def debug_transaction():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    print("Choose an option:")
-    print("1. Detect incoming fee claims")
-    print("2. Test buyback split logic")
-    print("3. Test small DOK buyback (0.01 ETH)")
-    print("4. Process single fee claim (FULL PIPELINE)")
-    print("5. Debug transaction")
-    
-    choice = input("\nEnter choice (1-5): ")
-    
-    if choice == "1":
-        asyncio.run(detect_incoming_fee_claims())
-    elif choice == "2":
-        asyncio.run(test_buyback_split())
-    elif choice == "3":
-        asyncio.run(test_small_dok_buyback())
-    elif choice == "4":
-        asyncio.run(process_single_fee_claim())
-    elif choice == "5":
-        asyncio.run(debug_transaction())
-    else:
-        print("Invalid choice!") 
+    while True:
+        print("\n" + "="*50)
+        print("FEE DETECTION AND BUYBACK SYSTEM")
+        print("="*50)
+        print("\nChoose an option:")
+        print("1. Detect incoming fee claims")
+        print("2. Test buyback split logic")
+        print("3. Test small DOK buyback (0.01 ETH)")
+        print("4. Process single fee claim (FULL PIPELINE)")
+        print("5. Debug transaction")
+        print("6. Process multiple fee claims (LOOP)")
+        print("7. Show unprocessed claims summary")
+        print("8. Exit")
+        
+        choice = input("\nEnter choice (1-8): ")
+        
+        if choice == "1":
+            asyncio.run(detect_incoming_fee_claims())
+        elif choice == "2":
+            asyncio.run(test_buyback_split())
+        elif choice == "3":
+            asyncio.run(test_small_dok_buyback())
+        elif choice == "4":
+            asyncio.run(process_single_fee_claim())
+        elif choice == "5":
+            asyncio.run(debug_transaction())
+        elif choice == "6":
+            asyncio.run(process_multiple_fee_claims())
+        elif choice == "7":
+            asyncio.run(show_unprocessed_summary())
+        elif choice == "8":
+            print("\n👋 Goodbye!")
+            break
+        else:
+            print("\n❌ Invalid choice! Please try again.")
+        
+        # Small pause before showing menu again
+        if choice in ["1", "2", "3", "4", "5", "6", "7"]:
+            input("\n📌 Press Enter to return to menu...") 

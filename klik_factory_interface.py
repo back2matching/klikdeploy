@@ -195,6 +195,18 @@ UNIVERSAL_ROUTER_ABI = [
     }
 ]
 
+# Compatibility for older Python versions
+if hasattr(asyncio, 'to_thread'):
+    to_thread = asyncio.to_thread
+else:
+    # Fallback for Python < 3.9
+    import concurrent.futures
+    _executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+    
+    async def to_thread(func, *args, **kwargs):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, func, *args, **kwargs)
+
 class KlikFactoryInterface:
     """Interface for Klik Factory contract interactions"""
     
@@ -790,84 +802,174 @@ class KlikFactoryInterface:
             if destination_address is None:
                 destination_address = self.account.address
             
-            # Don't call execute_dok_buyback_v3 here to avoid recursion
-            # Just continue with the normal flow for all tokens including DOK
-            
             deadline = int(self.w3.eth.get_block('latest')['timestamp']) + 300
             
+            print(f"   Executing buyback: {amount_eth} ETH for {token_address}")
+            print(f"   Destination: {destination_address}")
             logger.info(f"Executing buyback: {amount_eth} ETH for {token_address}")
+            logger.info(f"Destination: {destination_address}")
             
-            # Try V3 first since all Klik tokens use V3
-            logger.info("Trying V3 swap...")
+            # Use only 1% fee tier since that's what worked in testing
+            fee = 10000  # 1% fee tier
             
-            for fee in [10000, 3000, 500]:  # Try 1%, 0.3%, 0.05% fee tiers
+            print("   Attempting V3 swap with 1% fee tier...")
+            logger.info("Attempting V3 swap with 1% fee tier...")
+            
+            try:
+                # Build V3 swap params
+                swap_params = {
+                    'tokenIn': WETH_ADDRESS,
+                    'tokenOut': token_address,
+                    'fee': fee,
+                    'recipient': destination_address,
+                    'deadline': deadline,
+                    'amountIn': amount_wei,
+                    'amountOutMinimum': 0,  # Accept any amount
+                    'sqrtPriceLimitX96': 0  # No price limit
+                }
+                
+                print("   Building transaction...")
+                logger.info("Building transaction...")
+                function_call = self.router_v3.functions.exactInputSingle(swap_params)
+                
+                # Get current gas price first
+                gas_price = self.w3.eth.gas_price
+                # Increase gas price by 50% for instant execution
+                instant_gas_price = int(gas_price * 1.5)
+                # Ensure minimum 0.5 gwei for instant execution
+                min_gas_price = self.w3.to_wei(0.5, 'gwei')
+                instant_gas_price = max(instant_gas_price, min_gas_price)
+                
+                print(f"   Base gas price: {self.w3.from_wei(gas_price, 'gwei'):.2f} gwei")
+                print(f"   Using instant gas: {self.w3.from_wei(instant_gas_price, 'gwei'):.2f} gwei (min 0.5)")
+                logger.info(f"Current gas price: {self.w3.from_wei(gas_price, 'gwei'):.2f} gwei")
+                logger.info(f"Using instant gas price: {self.w3.from_wei(instant_gas_price, 'gwei'):.2f} gwei")
+                
+                # Try to estimate gas with timeout
+                print("   Estimating gas...")
+                logger.info("Estimating gas...")
                 try:
-                    # Build V3 swap params
-                    swap_params = {
-                        'tokenIn': WETH_ADDRESS,
-                        'tokenOut': token_address,
-                        'fee': fee,
-                        'recipient': destination_address,
-                        'deadline': deadline,
-                        'amountIn': amount_wei,
-                        'amountOutMinimum': 0,  # Accept any amount
-                        'sqrtPriceLimitX96': 0  # No price limit
+                    # Add timeout for gas estimation
+                    gas_estimate = await asyncio.wait_for(
+                        to_thread(
+                            function_call.estimate_gas,
+                            {'from': self.account.address, 'value': amount_wei}
+                        ),
+                        timeout=30.0  # 30 second timeout
+                    )
+                    print(f"   Gas estimate: {gas_estimate:,}")
+                    logger.info(f"Gas estimate: {gas_estimate:,}")
+                except asyncio.TimeoutError:
+                    print("   ❌ Gas estimation timed out after 30 seconds")
+                    logger.error("Gas estimation timed out after 30 seconds")
+                    return {
+                        'success': False,
+                        'error': 'Gas estimation timeout - pool might not exist or have liquidity'
+                    }
+                except Exception as e:
+                    print(f"   ❌ Gas estimation failed: {str(e)}")
+                    logger.error(f"Gas estimation failed: {str(e)}")
+                    # If it's a revert error, the pool likely doesn't exist
+                    if "execution reverted" in str(e).lower():
+                        return {
+                            'success': False,
+                            'error': 'No liquidity pool found for this token on Uniswap V3 with 1% fee'
+                        }
+                    return {
+                        'success': False,
+                        'error': f'Gas estimation failed: {str(e)}'
+                    }
+                
+                print("   ✅ V3 pool found with 1% fee tier")
+                logger.info("V3 pool found with 1% fee tier")
+                
+                nonce = self.w3.eth.get_transaction_count(self.account.address)
+                print(f"   Account nonce: {nonce}")
+                logger.info(f"Account nonce: {nonce}")
+                
+                # Build transaction with higher gas
+                final_gas_limit = int(gas_estimate * 2.0)  # 100% buffer (doubled from estimate)
+                print(f"   Using gas limit: {final_gas_limit:,} (2x estimate)")
+                
+                tx = function_call.build_transaction({
+                    'from': self.account.address,
+                    'value': amount_wei,
+                    'gas': final_gas_limit,
+                    'gasPrice': instant_gas_price,  # Use higher gas price
+                    'nonce': nonce,
+                    'chainId': self.w3.eth.chain_id
+                })
+                
+                print("   Signing transaction...")
+                logger.info("Signing transaction...")
+                # Sign and send
+                signed_tx = self.account.sign_transaction(tx)
+                
+                total_gas_cost = self.w3.from_wei(final_gas_limit * instant_gas_price, 'ether')
+                print(f"   Max gas cost: {total_gas_cost:.6f} ETH")
+                print(f"   Sending transaction...")
+                logger.info(f"Sending transaction with gas: {int(final_gas_limit):,}")
+                logger.info("Sending transaction...")
+                tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+                print(f"   Transaction sent: {tx_hash.hex()}")
+                logger.info(f"Transaction sent: {tx_hash.hex()}")
+                
+                # Wait for confirmation with timeout
+                print("   Waiting for confirmation (max 5 minutes)...")
+                logger.info("Waiting for confirmation (max 5 minutes)...")
+                try:
+                    receipt = await asyncio.wait_for(
+                        to_thread(
+                            self.w3.eth.wait_for_transaction_receipt,
+                            tx_hash,
+                            timeout=300
+                        ),
+                        timeout=310.0  # Slightly longer than web3's timeout
+                    )
+                except asyncio.TimeoutError:
+                    print("   ❌ Transaction confirmation timed out after 5 minutes")
+                    logger.error("Transaction confirmation timed out after 5 minutes")
+                    return {
+                        'success': False,
+                        'error': 'Transaction timeout - check etherscan',
+                        'tx_hash': tx_hash.hex()
+                    }
+                
+                if receipt['status'] == 1:
+                    print(f"   ✅ Successfully bought token via V3")
+                    logger.info(f"Successfully bought token {token_address} via V3 (now holding): {tx_hash.hex()}")
+                    
+                    return {
+                        'success': True,
+                        'tx_hash': tx_hash.hex(),
+                        'token_address': token_address,
+                        'amount_eth': amount_eth,
+                        'destination': destination_address,
+                        'router': 'V3',
+                        'fee_tier': fee
+                    }
+                else:
+                    print(f"   ❌ Transaction failed: {tx_hash.hex()}")
+                    logger.error(f"Transaction failed: {tx_hash.hex()}")
+                    return {
+                        'success': False,
+                        'error': 'Transaction reverted',
+                        'tx_hash': tx_hash.hex()
                     }
                     
-                    function_call = self.router_v3.functions.exactInputSingle(swap_params)
-                    
-                    # Get gas estimate
-                    gas_estimate = function_call.estimate_gas({
-                        'from': self.account.address,
-                        'value': amount_wei
-                    })
-                    
-                    logger.info(f"V3 pool found with {fee/100}% fee tier")
-                    
-                    nonce = self.w3.eth.get_transaction_count(self.account.address)
-                    gas_price = self.w3.eth.gas_price
-                    
-                    tx = function_call.build_transaction({
-                        'from': self.account.address,
-                        'value': amount_wei,
-                        'gas': int(gas_estimate * 1.2),
-                        'gasPrice': gas_price,
-                        'nonce': nonce,
-                        'chainId': self.w3.eth.chain_id
-                    })
-                    
-                    # Sign and send
-                    signed_tx = self.account.sign_transaction(tx)
-                    tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-                    
-                    # Wait for confirmation
-                    receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=300)
-                    
-                    if receipt['status'] == 1:
-                        logger.info(f"Successfully bought token {token_address} via V3 (now holding): {tx_hash.hex()}")
-                        
-                        return {
-                            'success': True,
-                            'tx_hash': tx_hash.hex(),
-                            'token_address': token_address,
-                            'amount_eth': amount_eth,
-                            'destination': destination_address,
-                            'router': 'V3',
-                            'fee_tier': fee
-                        }
-                    
-                except Exception as e:
-                    logger.warning(f"V3 swap failed with {fee/100}% fee: {str(e)}")
-                    continue
-            
-            # All V3 fee tiers failed
-            return {
-                'success': False,
-                'error': 'No liquidity found on V3 - token might not have a pool yet'
-            }
+            except Exception as e:
+                print(f"   ❌ V3 swap error: {str(e)}")
+                logger.error(f"V3 swap error: {str(e)}")
+                return {
+                    'success': False,
+                    'error': f'Swap failed: {str(e)}'
+                }
                 
         except Exception as e:
+            print(f"   ❌ Buyback failed: {e}")
             logger.error(f"Buyback failed: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 'success': False,
                 'error': str(e)
