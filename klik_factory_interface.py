@@ -629,11 +629,11 @@ class KlikFactoryInterface:
             # Fallback to approximate price
             return 0.00008  # ~$0.20 at $2500 ETH
     
-    async def execute_dok_buyback_v3(self, amount_eth: float, reference_tx: str) -> Dict:
+    async def execute_dok_buyback_v3(self, amount_eth: float, reference_tx: str, silent: bool = False) -> Dict:
         """Execute DOK buyback and hold in our wallet"""
         try:
             # Simply use the general buyback method which now supports V3
-            result = await self.execute_token_buyback(DOK_ADDRESS, amount_eth)
+            result = await self.execute_token_buyback(DOK_ADDRESS, amount_eth, silent=silent)
             
             if result['success']:
                 # Try to estimate DOK amount from price
@@ -793,7 +793,7 @@ class KlikFactoryInterface:
             logger.error(f"Error decoding collect fee transaction: {e}")
             return None
     
-    async def execute_token_buyback(self, token_address: str, amount_eth: float, destination_address: str = None) -> Dict:
+    async def execute_token_buyback(self, token_address: str, amount_eth: float, destination_address: str = None, silent: bool = False) -> Dict:
         """Execute buyback for any token and hold in our wallet"""
         try:
             amount_wei = self.w3.to_wei(amount_eth, 'ether')
@@ -804,15 +804,17 @@ class KlikFactoryInterface:
             
             deadline = int(self.w3.eth.get_block('latest')['timestamp']) + 300
             
-            print(f"   Executing buyback: {amount_eth} ETH for {token_address}")
-            print(f"   Destination: {destination_address}")
+            if not silent:
+                print(f"   Executing buyback: {amount_eth} ETH for {token_address}")
+                print(f"   Destination: {destination_address}")
             logger.info(f"Executing buyback: {amount_eth} ETH for {token_address}")
             logger.info(f"Destination: {destination_address}")
             
             # Use only 1% fee tier since that's what worked in testing
             fee = 10000  # 1% fee tier
             
-            print("   Attempting V3 swap with 1% fee tier...")
+            if not silent:
+                print("   Attempting V3 swap with 1% fee tier...")
             logger.info("Attempting V3 swap with 1% fee tier...")
             
             try:
@@ -828,7 +830,8 @@ class KlikFactoryInterface:
                     'sqrtPriceLimitX96': 0  # No price limit
                 }
                 
-                print("   Building transaction...")
+                if not silent:
+                    print("   Building transaction...")
                 logger.info("Building transaction...")
                 function_call = self.router_v3.functions.exactInputSingle(swap_params)
                 
@@ -840,13 +843,15 @@ class KlikFactoryInterface:
                 min_gas_price = self.w3.to_wei(0.5, 'gwei')
                 instant_gas_price = max(instant_gas_price, min_gas_price)
                 
-                print(f"   Base gas price: {self.w3.from_wei(gas_price, 'gwei'):.2f} gwei")
-                print(f"   Using instant gas: {self.w3.from_wei(instant_gas_price, 'gwei'):.2f} gwei (min 0.5)")
+                if not silent:
+                    print(f"   Base gas price: {self.w3.from_wei(gas_price, 'gwei'):.2f} gwei")
+                    print(f"   Using instant gas: {self.w3.from_wei(instant_gas_price, 'gwei'):.2f} gwei (min 0.5)")
                 logger.info(f"Current gas price: {self.w3.from_wei(gas_price, 'gwei'):.2f} gwei")
                 logger.info(f"Using instant gas price: {self.w3.from_wei(instant_gas_price, 'gwei'):.2f} gwei")
                 
                 # Try to estimate gas with timeout
-                print("   Estimating gas...")
+                if not silent:
+                    print("   Estimating gas...")
                 logger.info("Estimating gas...")
                 try:
                     # Add timeout for gas estimation
@@ -857,17 +862,20 @@ class KlikFactoryInterface:
                         ),
                         timeout=30.0  # 30 second timeout
                     )
-                    print(f"   Gas estimate: {gas_estimate:,}")
+                    if not silent:
+                        print(f"   Gas estimate: {gas_estimate:,}")
                     logger.info(f"Gas estimate: {gas_estimate:,}")
                 except asyncio.TimeoutError:
-                    print("   ❌ Gas estimation timed out after 30 seconds")
+                    if not silent:
+                        print("   ❌ Gas estimation timed out after 30 seconds")
                     logger.error("Gas estimation timed out after 30 seconds")
                     return {
                         'success': False,
                         'error': 'Gas estimation timeout - pool might not exist or have liquidity'
                     }
                 except Exception as e:
-                    print(f"   ❌ Gas estimation failed: {str(e)}")
+                    if not silent:
+                        print(f"   ❌ Gas estimation failed: {str(e)}")
                     logger.error(f"Gas estimation failed: {str(e)}")
                     # If it's a revert error, the pool likely doesn't exist
                     if "execution reverted" in str(e).lower():
@@ -880,16 +888,19 @@ class KlikFactoryInterface:
                         'error': f'Gas estimation failed: {str(e)}'
                     }
                 
-                print("   ✅ V3 pool found with 1% fee tier")
+                if not silent:
+                    print("   ✅ V3 pool found with 1% fee tier")
                 logger.info("V3 pool found with 1% fee tier")
                 
                 nonce = self.w3.eth.get_transaction_count(self.account.address)
-                print(f"   Account nonce: {nonce}")
+                if not silent:
+                    print(f"   Account nonce: {nonce}")
                 logger.info(f"Account nonce: {nonce}")
                 
                 # Build transaction with higher gas
                 final_gas_limit = int(gas_estimate * 2.0)  # 100% buffer (doubled from estimate)
-                print(f"   Using gas limit: {final_gas_limit:,} (2x estimate)")
+                if not silent:
+                    print(f"   Using gas limit: {final_gas_limit:,} (2x estimate)")
                 
                 tx = function_call.build_transaction({
                     'from': self.account.address,
@@ -900,22 +911,26 @@ class KlikFactoryInterface:
                     'chainId': self.w3.eth.chain_id
                 })
                 
-                print("   Signing transaction...")
+                if not silent:
+                    print("   Signing transaction...")
                 logger.info("Signing transaction...")
                 # Sign and send
                 signed_tx = self.account.sign_transaction(tx)
                 
                 total_gas_cost = self.w3.from_wei(final_gas_limit * instant_gas_price, 'ether')
-                print(f"   Max gas cost: {total_gas_cost:.6f} ETH")
-                print(f"   Sending transaction...")
+                if not silent:
+                    print(f"   Max gas cost: {total_gas_cost:.6f} ETH")
+                    print(f"   Sending transaction...")
                 logger.info(f"Sending transaction with gas: {int(final_gas_limit):,}")
                 logger.info("Sending transaction...")
                 tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
-                print(f"   Transaction sent: {tx_hash.hex()}")
+                if not silent:
+                    print(f"   Transaction sent: {tx_hash.hex()}")
                 logger.info(f"Transaction sent: {tx_hash.hex()}")
                 
                 # Wait for confirmation with timeout
-                print("   Waiting for confirmation (max 5 minutes)...")
+                if not silent:
+                    print("   Waiting for confirmation (max 5 minutes)...")
                 logger.info("Waiting for confirmation (max 5 minutes)...")
                 try:
                     receipt = await asyncio.wait_for(
@@ -927,7 +942,8 @@ class KlikFactoryInterface:
                         timeout=310.0  # Slightly longer than web3's timeout
                     )
                 except asyncio.TimeoutError:
-                    print("   ❌ Transaction confirmation timed out after 5 minutes")
+                    if not silent:
+                        print("   ❌ Transaction confirmation timed out after 5 minutes")
                     logger.error("Transaction confirmation timed out after 5 minutes")
                     return {
                         'success': False,
@@ -936,7 +952,8 @@ class KlikFactoryInterface:
                     }
                 
                 if receipt['status'] == 1:
-                    print(f"   ✅ Successfully bought token via V3")
+                    if not silent:
+                        print(f"   ✅ Successfully bought token via V3")
                     logger.info(f"Successfully bought token {token_address} via V3 (now holding): {tx_hash.hex()}")
                     
                     return {
@@ -949,7 +966,8 @@ class KlikFactoryInterface:
                         'fee_tier': fee
                     }
                 else:
-                    print(f"   ❌ Transaction failed: {tx_hash.hex()}")
+                    if not silent:
+                        print(f"   ❌ Transaction failed: {tx_hash.hex()}")
                     logger.error(f"Transaction failed: {tx_hash.hex()}")
                     return {
                         'success': False,
@@ -958,7 +976,8 @@ class KlikFactoryInterface:
                     }
                     
             except Exception as e:
-                print(f"   ❌ V3 swap error: {str(e)}")
+                if not silent:
+                    print(f"   ❌ V3 swap error: {str(e)}")
                 logger.error(f"V3 swap error: {str(e)}")
                 return {
                     'success': False,
@@ -966,7 +985,8 @@ class KlikFactoryInterface:
                 }
                 
         except Exception as e:
-            print(f"   ❌ Buyback failed: {e}")
+            if not silent:
+                print(f"   ❌ Buyback failed: {e}")
             logger.error(f"Buyback failed: {e}")
             import traceback
             traceback.print_exc()
@@ -987,18 +1007,18 @@ async def simulate_fee_claim(token_address: str) -> Dict:
     """DEPRECATED - Active claiming disabled"""
     return await factory_interface.simulate_fee_claim(token_address)
 
-async def execute_dok_buyback(amount: float, reference_tx: str) -> Dict:
+async def execute_dok_buyback(amount: float, reference_tx: str, silent: bool = False) -> Dict:
     """Execute DOK buyback and hold in wallet"""
-    return await factory_interface.execute_dok_buyback_v3(amount, reference_tx)
+    return await factory_interface.execute_dok_buyback_v3(amount, reference_tx, silent)
 
 # New functions for passive fee processing
 async def decode_collect_fee_transaction(tx_hash: str) -> Optional[Dict]:
     """Decode a collectFee transaction to get token details"""
     return await factory_interface.decode_collect_fee_transaction(tx_hash)
 
-async def execute_token_buyback(token_address: str, amount_eth: float, destination_address: str = None) -> Dict:
-    """Execute buyback for any token and hold"""
-    return await factory_interface.execute_token_buyback(token_address, amount_eth, destination_address)
+async def execute_token_buyback(token_address: str, amount_eth: float, destination_address: str = None, silent: bool = False) -> Dict:
+    """Execute buyback for any token and hold in our wallet"""
+    return await factory_interface.execute_token_buyback(token_address, amount_eth, destination_address, silent)
 
 # Backward compatibility - these will be deprecated
 async def get_pool_address(token_address: str) -> Optional[str]:
