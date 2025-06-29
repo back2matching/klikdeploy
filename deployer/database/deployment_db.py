@@ -361,16 +361,16 @@ class DeploymentDatabase:
                 ''', (cooldown_end, consecutive_days, now, username))
                 return False, "DAILY LIMIT: 3+ deploys in 24 hours. 5-day cooldown applied", 5
             
-            # Weekly limit check (more severe for repeated abuse)
-            elif free_deploys_7d >= 4:  # 4+ deploys in 7 days = exceeded weekly allowance
-                # Apply 14-day cooldown for exceeding weekly limit
-                cooldown_end = now + timedelta(days=14)
+            # Weekly limit check (severe for gaming the system)
+            elif free_deploys_7d >= 4:  # 4+ deploys in 7 days = gaming daily limits
+                # Apply 30-day cooldown for serious abuse
+                cooldown_end = now + timedelta(days=30)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Weekly limit exceeded (4+ free/week). 14-day cooldown applied", 14
+                return False, "Weekly limit exceeded (4+ free/week). 30-day cooldown applied", 30
             
             # Update last deployment time
             conn.execute('''
@@ -383,7 +383,7 @@ class DeploymentDatabase:
             if deploys_today >= 2:
                 return True, f"⚠️ Deployment allowed (2/3 today - ONE MORE and you'll get 5-day timeout!)", 0
             elif free_deploys_7d == 3:
-                return True, f"Deployment allowed (3/3 free used this week - ONE MORE and you'll get 14-day timeout!)", 0
+                return True, f"Deployment allowed (3/3 free used this week - ONE MORE and you'll get 30-day timeout!)", 0
             elif free_deploys_7d == 2:
                 return True, f"Deployment allowed (2/3 free used this week)", 0
             elif free_deploys_7d == 1:

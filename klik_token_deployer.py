@@ -2165,7 +2165,7 @@ Learn the limits: t.me/DeployOnKlik"""
                 elif "Weekly limit exceeded" in instructions:
                     # User has used 4+ free deploys this week
                     cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
-                    days = cooldown_match.group(1) if cooldown_match else "14"
+                    days = cooldown_match.group(1) if cooldown_match else "30"
                     
                     # Get their recent deployments to show WITH ADDRESSES
                     recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
@@ -2188,12 +2188,12 @@ Learn the limits: t.me/DeployOnKlik"""
 
 {deploy_text}
 
-14-day cooldown. Deposit to deploy: t.me/DeployOnKlik"""
+30-day cooldown. Deposit to deploy: t.me/DeployOnKlik"""
                     else:
                         # No deployments found but hit limit (shouldn't happen)
                         reply_text = f"""@{username} Weekly limit exceeded! (4+ free/week)
 
-14-day cooldown applied.
+30-day cooldown applied.
 💰 Deposit ETH: t.me/DeployOnKlik
 🎯 Hold 5M+ $DOK for 10/week"""
                 else:
