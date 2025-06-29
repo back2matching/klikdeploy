@@ -1168,4 +1168,49 @@ class DeploymentDatabase:
                 'claimable_amount': claimable,
                 'total_claimed': total_claimed,
                 'tokens_with_fees': tokens_with_fees
-            } 
+            }
+
+    def check_duplicate_token_deployment(self, username: str, token_symbol: str, token_name: str) -> Tuple[bool, Optional[Dict]]:
+        """Check if user has already deployed this exact token symbol/name combination
+        
+        Args:
+            username: Twitter username
+            token_symbol: Token symbol to check
+            token_name: Token name to check
+            
+        Returns:
+            Tuple of (is_duplicate, existing_deployment_info)
+            - is_duplicate: True if exact symbol+name combo already deployed successfully
+            - existing_deployment_info: Dict with info about existing deployment if duplicate
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Check for existing successful deployment with same symbol AND name
+                cursor = conn.execute('''
+                    SELECT token_symbol, token_name, token_address, deployed_at, tweet_url
+                    FROM deployments 
+                    WHERE LOWER(username) = LOWER(?) 
+                    AND LOWER(token_symbol) = LOWER(?) 
+                    AND LOWER(token_name) = LOWER(?)
+                    AND status = 'success'
+                    ORDER BY deployed_at DESC
+                    LIMIT 1
+                ''', (username, token_symbol, token_name))
+                
+                result = cursor.fetchone()
+                
+                if result:
+                    return True, {
+                        'symbol': result[0],
+                        'name': result[1],
+                        'address': result[2],
+                        'deployed_at': result[3],
+                        'tweet_url': result[4]
+                    }
+                
+                return False, None
+                
+        except Exception as e:
+            self.logger.error(f"Error checking duplicate deployment for {username}: {e}")
+            # Err on the side of caution - allow deployment if check fails
+            return False, None 

@@ -1634,6 +1634,23 @@ You sent: Missing $"""
             
             # Valid token info - proceed with deployment
             else:
+                # CHECK FOR DUPLICATE DEPLOYMENT (same user, same symbol+name combo)
+                is_duplicate, existing_info = self.db.check_duplicate_token_deployment(
+                    username, token_info['symbol'], token_info['name']
+                )
+                
+                if is_duplicate:
+                    print(f"🚫 Duplicate deployment blocked: @{username} already deployed ${token_info['symbol']} ({token_info['name']})")
+                    self.logger.info(f"Blocked duplicate deployment from @{username}: ${token_info['symbol']} ({token_info['name']})")
+                    
+                    # Send helpful Twitter reply with suggestions
+                    await self.send_twitter_reply_duplicate_token(
+                        tweet_id, username, existing_info, 
+                        token_info['symbol'], token_info['name']
+                    )
+                    
+                    return f"❌ Duplicate deployment blocked - ${token_info['symbol']} ({token_info['name']}) already deployed"
+                
                 # Get image - prioritize deployment tweet's own image over parent tweet
                 image_url = None
                 
@@ -2609,81 +2626,91 @@ Symbol must be 1-10 letters/numbers only."""
             return False
 
     async def send_twitter_reply_specific_error(self, tweet_id: str, username: str, error_message: str) -> bool:
-        """Reply with specific error message (symbol too long, invalid chars, etc)"""
+        """Send a Twitter reply with a specific error message"""
+        # Rate limit check
+        current_time = time.time()
+        
+        # Clean up old entries
+        self.twitter_reply_history = [t for t in self.twitter_reply_history if current_time - t < self.twitter_daily_window]
+        
+        # Check 15-minute and daily limits
+        replies_15min = len([t for t in self.twitter_reply_history if current_time - t < self.twitter_reply_window])
+        replies_24h = len([t for t in self.twitter_reply_history if current_time - t < self.twitter_daily_window])
+        
+        if replies_15min >= self.twitter_reply_limit:
+            print(f"⏳ Twitter rate limit: {replies_15min}/{self.twitter_reply_limit} replies in 15 minutes")
+            return False
+            
+        if replies_24h >= self.twitter_daily_limit:
+            print(f"⏳ Twitter daily limit: {replies_24h}/{self.twitter_daily_limit} replies today")
+            return False
+        
         try:
-            # Check Twitter reply rate limit first
-            now = time.time()
-            self.twitter_reply_history = [t for t in self.twitter_reply_history if now - t < self.twitter_reply_window]
-            daily_replies = [t for t in self.twitter_reply_history if now - t < self.twitter_daily_window]
+            reply_success = await self._send_reply_with_requests(tweet_id, f"@{username} {error_message}")
             
-            if len(self.twitter_reply_history) >= self.twitter_reply_limit:
-                self.logger.warning(f"Twitter specific error reply rate limit: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
-                return False
-            
-            if len(daily_replies) >= self.twitter_daily_limit:
-                self.logger.warning(f"Twitter daily limit: {len(daily_replies)}/{self.twitter_daily_limit}")
-                return False
-            
-            # SAFETY: Check if this is from the bot itself
-            if username.lower() == self.bot_username.lower():
-                self.logger.warning(f"Skipping specific error reply to own tweet from @{username}")
-                return False
-            
-            # Check if we have all OAuth 1.0a credentials
-            api_key = os.getenv('TWITTER_API_KEY')
-            api_secret = os.getenv('TWITTER_API_SECRET')
-            access_token = os.getenv('TWITTER_ACCESS_TOKEN')
-            access_token_secret = os.getenv('TWITTER_ACCESS_TOKEN_SECRET')
-            
-            if not all([api_key, api_secret, access_token, access_token_secret]):
-                self.logger.warning("Twitter OAuth credentials not complete - skipping specific error reply")
-                return False
-            
-            # Create helpful reply based on the specific error
-            reply_text = f"""@{username} {error_message}
-
-✅ Valid format: @DeployOnKlik $TICKER
-✅ Symbol rules: 1-16 characters, letters/numbers only
-
-Try again with a shorter symbol!"""
-            
-            # Use tweepy
-            import tweepy
-            
-            try:
-                client = tweepy.Client(
-                    consumer_key=api_key,
-                    consumer_secret=api_secret,
-                    access_token=access_token,
-                    access_token_secret=access_token_secret
-                )
+            if reply_success:
+                self.twitter_reply_history.append(current_time)
+                print(f"✅ Specific error reply sent! Tweet ID: {reply_success}")
+                return True
                 
-                response = client.create_tweet(
-                    text=reply_text,
-                    in_reply_to_tweet_id=tweet_id
-                )
-                
-                if response.data:
-                    self.logger.info(f"✅ Specific error reply sent! Tweet ID: {response.data['id']}")
-                    self.twitter_reply_history.append(time.time())
-                    print(f"📱 Sent specific error reply to @{username}: {error_message}")
-                    return True
-                else:
-                    return False
-                    
-            except tweepy.TooManyRequests as e:
-                # This is Twitter's API rate limit, not our internal tracking
-                self.logger.error(f"Twitter API rate limit hit (specific error): {e}")
-                print(f"⚠️  Twitter API returned rate limit error!")
-                print(f"   Internal tracking: {len(self.twitter_reply_history)}/{self.twitter_reply_limit}")
-                return False
-            except Exception as e:
-                self.logger.error(f"Tweepy error sending specific error reply: {e}")
-                return False
-            
         except Exception as e:
             self.logger.error(f"Error sending specific error reply: {e}")
             return False
+        
+        return False
+
+    async def send_twitter_reply_duplicate_token(self, tweet_id: str, username: str, 
+                                               existing_info: Dict, token_symbol: str, token_name: str) -> bool:
+        """Send a Twitter reply about duplicate token deployment with helpful suggestions"""
+        # Rate limit check
+        current_time = time.time()
+        
+        # Clean up old entries
+        self.twitter_reply_history = [t for t in self.twitter_reply_history if current_time - t < self.twitter_daily_window]
+        
+        # Check 15-minute and daily limits
+        replies_15min = len([t for t in self.twitter_reply_history if current_time - t < self.twitter_reply_window])
+        replies_24h = len([t for t in self.twitter_reply_history if current_time - t < self.twitter_daily_window])
+        
+        if replies_15min >= self.twitter_reply_limit:
+            print(f"⏳ Twitter rate limit: {replies_15min}/{self.twitter_reply_limit} replies in 15 minutes")
+            return False
+            
+        if replies_24h >= self.twitter_daily_limit:
+            print(f"⏳ Twitter daily limit: {replies_24h}/{self.twitter_daily_limit} replies today")
+            return False
+        
+        try:
+            # Parse deployment date for display
+            deployed_date = existing_info['deployed_at']
+            if isinstance(deployed_date, str):
+                try:
+                    from datetime import datetime
+                    deployed_dt = datetime.fromisoformat(deployed_date)
+                    date_str = deployed_dt.strftime('%b %d')
+                except:
+                    date_str = "recently"
+            else:
+                date_str = "recently"
+            
+            # Create helpful reply message
+            reply_text = f"""@{username} You already deployed ${token_symbol} ({token_name}) on {date_str}!
+
+📈 Your token: dexscreener.com/ethereum/{existing_info['address']}"""
+            
+            reply_success = await self._send_reply_with_requests(tweet_id, reply_text)
+            
+            if reply_success:
+                self.twitter_reply_history.append(current_time)
+                print(f"✅ Duplicate token reply sent! Tweet ID: {reply_success}")
+                print(f"📱 Sent duplicate token warning to @{username}")
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Error sending duplicate token reply: {e}")
+            return False
+        
+        return False
 
 async def main(mode: str = "realtime"):
     """Main function - defaults to real-time monitoring
