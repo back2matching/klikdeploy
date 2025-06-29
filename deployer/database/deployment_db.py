@@ -350,27 +350,27 @@ class DeploymentDatabase:
             # Debug logging
             self.logger.info(f"@{username} deployment check: {deploys_today} today, {actual_free_deploys_7d} this week")
             
-            # ANTI-SPAM: 4+ deploys in ONE DAY = serious spam = 30 day cooldown
+            # ANTI-SPAM: 4+ deploys in ONE DAY = spam = 5 day cooldown
             if deploys_today >= 3:  # Already did 3 today, trying for 4th
-                # Apply 30-day cooldown for serious spam
-                cooldown_end = now + timedelta(days=30)
+                # Apply 5-day cooldown for daily spam
+                cooldown_end = now + timedelta(days=5)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "SPAM DETECTED: 4+ deploys in one day. 30-day cooldown applied", 30
+                return False, "DAILY LIMIT: 3+ deploys in 24 hours. 5-day cooldown applied", 5
             
-            # Weekly limit check (less severe)
-            elif free_deploys_7d >= 3:  # 3+ deploys in 7 days = used weekly allowance
-                # Apply 7-day cooldown for exceeding weekly limit
-                cooldown_end = now + timedelta(days=7)
+            # Weekly limit check (more severe for repeated abuse)
+            elif free_deploys_7d >= 4:  # 4+ deploys in 7 days = exceeded weekly allowance
+                # Apply 14-day cooldown for exceeding weekly limit
+                cooldown_end = now + timedelta(days=14)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Weekly limit exceeded (3 free/week). 7-day cooldown applied", 7
+                return False, "Weekly limit exceeded (4+ free/week). 14-day cooldown applied", 14
             
             # Update last deployment time
             conn.execute('''
@@ -381,7 +381,9 @@ class DeploymentDatabase:
             
             # More informative message about limits
             if deploys_today >= 2:
-                return True, f"⚠️ Deployment allowed (2/3 today - ONE MORE and you'll get 30-day spam timeout!)", 0
+                return True, f"⚠️ Deployment allowed (2/3 today - ONE MORE and you'll get 5-day timeout!)", 0
+            elif free_deploys_7d == 3:
+                return True, f"Deployment allowed (3/3 free used this week - ONE MORE and you'll get 14-day timeout!)", 0
             elif free_deploys_7d == 2:
                 return True, f"Deployment allowed (2/3 free used this week)", 0
             elif free_deploys_7d == 1:

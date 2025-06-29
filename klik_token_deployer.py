@@ -2154,18 +2154,18 @@ Please try again in a few minutes ⏳
 Status: t.me/DeployOnKlik"""
             elif "COOLDOWN" in instructions:
                 # Handle new progressive cooldown messages
-                if "SPAM DETECTED" in instructions:
-                    # User tried 4+ deploys in one day - serious spam
-                    reply_text = f"""@{username} SPAM DETECTED! 🚫
+                if "DAILY LIMIT" in instructions:
+                    # User tried 4+ deploys in one day - daily limit hit
+                    reply_text = f"""@{username} Daily limit hit! ⏰
 
-4+ deploys in ONE DAY is abuse.
-30-day timeout applied.
+3+ deploys in 24 hours exceeded.
+5-day cooldown applied.
 
-Learn the rules: t.me/DeployOnKlik"""
+Learn the limits: t.me/DeployOnKlik"""
                 elif "Weekly limit exceeded" in instructions:
-                    # User has used all 3 free deploys this week
+                    # User has used 4+ free deploys this week
                     cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
-                    days = cooldown_match.group(1) if cooldown_match else "7"
+                    days = cooldown_match.group(1) if cooldown_match else "14"
                     
                     # Get their recent deployments to show WITH ADDRESSES
                     recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
@@ -2184,21 +2184,21 @@ Learn the rules: t.me/DeployOnKlik"""
                                 deploy_lines.append(f"${symbol} (no address)")
                         
                         deploy_text = "\n".join(deploy_lines)
-                        reply_text = f"""@{username} Weekly limit reached! ({actual_count}/3 used)
+                        reply_text = f"""@{username} Weekly limit exceeded! ({actual_count}/3 normal + extras)
 
 {deploy_text}
 
-Wait {days} days OR deposit: t.me/DeployOnKlik"""
+14-day cooldown. Deposit to deploy: t.me/DeployOnKlik"""
                     else:
                         # No deployments found but hit limit (shouldn't happen)
-                        reply_text = f"""@{username} Weekly limit reached! (3 free/week)
+                        reply_text = f"""@{username} Weekly limit exceeded! (4+ free/week)
 
-Wait {days} days OR:
+14-day cooldown applied.
 💰 Deposit ETH: t.me/DeployOnKlik
 🎯 Hold 5M+ $DOK for 10/week"""
                 else:
                     # Generic cooldown message
-                    reply_text = f"""@{username} Cooldown active! (~3 free/week limit)
+                    reply_text = f"""@{username} Cooldown active! (3 free/week, 4+ gets penalty)
 
 Skip cooldown:
 💰 Deposit ETH: t.me/DeployOnKlik
@@ -2230,7 +2230,7 @@ Or deposit ETH: t.me/DeployOnKlik"""
 
 ${symbol}: https://dexscreener.com/ethereum/{address}
 
-Want more? (3/week limit)
+Want more? (3 free/week, 4+ gets penalty)
 💰 Deposit: t.me/DeployOnKlik
 🎯 Hold $DOK for 10/week"""
                     else:
