@@ -500,7 +500,7 @@ class KlikTokenDeployer:
     def parse_tweet_for_token(self, tweet_text: str) -> Optional[Dict[str, str]]:
         """Parse tweet text to extract token name/symbol
         
-        REQUIRES proper deployment format to prevent accidental deployments
+        REQUIRES EXACT deployment format to prevent accidental deployments
         
         Valid formats:
         "@DeployOnKlik $MEME" -> {symbol: "MEME", name: "MEME"}
@@ -508,8 +508,9 @@ class KlikTokenDeployer:
         "@DeployOnKlik $CAT + CatCoin" -> {symbol: "CAT", name: "CatCoin"}
         
         Invalid (conversation mentions):
-        "@user @DeployOnKlik thoughts on $TOKEN" -> None (not deployment format)
+        "@DeployOnKlik new ath soon!! $DOK" -> None (not deployment format)
         "@DeployOnKlik what do you think of $TOKEN" -> None (asking opinion)
+        "@user @DeployOnKlik thoughts on $TOKEN" -> None (not deployment format)
         
         Returns:
             Dict with 'symbol' and 'name' if valid deployment request
@@ -518,40 +519,67 @@ class KlikTokenDeployer:
         """
         original_text = tweet_text.strip()
         
-        # STRICT FORMAT CHECK: Must start with @DeployOnKlik followed by $SYMBOL
-        # This prevents accidental deployments from conversation mentions
+        # ULTRA STRICT FORMAT CHECK: Must be EXACTLY @DeployOnKlik $SYMBOL [optional name]
+        # NO other text allowed between @DeployOnKlik and $SYMBOL
         
-        # Pattern 1: @DeployOnKlik $SYMBOL (direct deployment)
-        # Pattern 2: @DeployOnKlik $SYMBOL - Name (with name)
-        # Pattern 3: @DeployOnKlik $SYMBOL + Name (with name)
+        # Pattern: @DeployOnKlik followed by optional whitespace, then immediately $SYMBOL
+        # This prevents "new ath soon!! $DOK" type false positives
+        strict_pattern = rf'@{re.escape(self.bot_username)}\s+\$([a-zA-Z0-9]+)(?:\s*[-+]\s*([^@\n]*?))?(?:\s*$|[\s@])'
         
-        # Case-insensitive check for our bot mention followed by $SYMBOL
-        bot_mention_pattern = rf'@{re.escape(self.bot_username.lower())}\s+\$([a-zA-Z0-9]+)'
-        symbol_match = re.search(bot_mention_pattern, original_text.lower())
+        # Must be case-insensitive but structure-sensitive
+        symbol_match = re.search(strict_pattern, original_text, re.IGNORECASE)
         
         if not symbol_match:
-            # Check if they mentioned our bot but without proper format
+            # Check if they mentioned our bot at all
             if f'@{self.bot_username.lower()}' in original_text.lower():
-                # They mentioned us but didn't use proper format - check if it looks like deployment intent
+                # They mentioned us - check if there are $ symbols anywhere
                 dollar_symbols = re.findall(r'\$([a-zA-Z0-9]+)', original_text)
                 if dollar_symbols:
-                    # They mentioned us AND have $ symbols, but wrong format
-                    # Check for conversation keywords that indicate NOT a deployment
-                    conversation_keywords = [
-                        'thoughts on', 'think of', 'opinion on', 'what about', 
-                        'how about', 'check out', 'look at', 'see this',
-                        'alpha', 'bullish', 'bearish', 'pump', 'dump',
-                        'bought', 'sold', 'hodl', 'hold', 'moon'
+                    # They mentioned us AND have $ symbols, but NOT in proper format
+                    
+                    # EXPANDED conversation detection - these indicate NOT a deployment
+                    conversation_indicators = [
+                        # Opinion/thoughts
+                        'thoughts on', 'think of', 'think about', 'opinion on', 'what about', 
+                        'how about', 'check out', 'look at', 'see this', 'seen this',
+                        
+                        # Market talk (NOT deployment)
+                        'alpha', 'bullish', 'bearish', 'pump', 'dump', 'moon', 'ath', 'new ath',
+                        'bought', 'sold', 'hodl', 'hold', 'holding', 'bag', 'bags',
+                        'price', 'chart', 'trading', 'trade', 'buy', 'sell',
+                        
+                        # General conversation
+                        'working hard', 'team working', 'soon', 'coming soon', 'update',
+                        'announcement', 'news', 'congrats', 'congratulations',
+                        'good job', 'nice work', 'awesome', 'great job', 'well done',
+                        
+                        # Questions (definitely not deployments)
+                        'when', 'why', 'how', 'what', 'where', 'is there', 'can you', 
+                        'will you', 'do you', 'does', 'are you', '?',
+                        
+                        # Support/help requests
+                        'help', 'support', 'issue', 'problem', 'error', 'bug',
+                        'explain', 'furthermore', 'please', 'thank you', 'thanks'
                     ]
                     
                     text_lower = original_text.lower()
-                    is_conversation = any(keyword in text_lower for keyword in conversation_keywords)
+                    is_conversation = any(indicator in text_lower for indicator in conversation_indicators)
+                    
+                    # Additional check: if $ symbol is far from @mention, it's likely conversation
+                    bot_pos = text_lower.find(f'@{self.bot_username.lower()}')
+                    first_dollar_pos = text_lower.find('$')
+                    
+                    if bot_pos >= 0 and first_dollar_pos >= 0:
+                        # If there are more than 20 characters between @mention and $, it's likely conversation
+                        distance = first_dollar_pos - (bot_pos + len(self.bot_username) + 1)
+                        if distance > 20:
+                            is_conversation = True
                     
                     if is_conversation:
                         # This is clearly a conversation mention, not a deployment
                         return None
                     else:
-                        # Wrong format but might be trying to deploy
+                        # Wrong format but MIGHT be trying to deploy (very rare case)
                         return {
                             'error': f'Wrong format! Use: @{self.bot_username} $SYMBOL or @{self.bot_username} $SYMBOL - Token Name',
                             'error_type': 'wrong_format'
@@ -586,18 +614,17 @@ class KlikTokenDeployer:
         if not symbol:
             return None
         
-        # Look for name after a dash or plus sign in the original text
-        # Pattern: @DeployOnKlik $SYMBOL - Token Name
-        name_pattern = rf'@{re.escape(self.bot_username)}\s+\${re.escape(symbol)}\s*[-–+]\s*([^@\n]+?)(?:\s*$)'
-        name_match = re.search(name_pattern, original_text, re.IGNORECASE)
-        
-        if name_match:
-            name = name_match.group(1).strip()
+        # Extract name from the match if provided (group 2)
+        name = None
+        if symbol_match.group(2):
+            name = symbol_match.group(2).strip()
             # Remove any trailing URLs that might have been caught
             name = re.sub(r'\s*https?://\S+\s*$', '', name).strip()
             # Remove any extra whitespace
             name = ' '.join(name.split())
-        else:
+        
+        # Use symbol as name if no name provided
+        if not name:
             name = symbol
         
         # Validate name length
