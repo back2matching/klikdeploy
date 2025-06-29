@@ -87,6 +87,24 @@ def quick_stats():
         date = datetime.fromisoformat(row['deployed_at']).strftime("%m/%d %H:%M")
         print(f"${row['token_symbol']:<8} by @{row['username']:<15} ({date})")
     
+    # Self-Claim Fees Quick Stats
+    print_section("💰 SELF-CLAIM FEES")
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_fee_settings'")
+    if cursor.fetchone():
+        cursor = conn.execute("""
+            SELECT 
+                SUM(CASE WHEN fee_capture_enabled = 1 THEN 1 ELSE 0 END) as self_claim_users,
+                (SELECT SUM(user_claimable_amount) FROM deployment_fees WHERE user_claimable_amount > 0) as total_claimable
+        """)
+        fees_row = cursor.fetchone()
+        
+        self_claim_users = fees_row['self_claim_users'] or 0
+        total_claimable = fees_row['total_claimable'] or 0
+        
+        print(f"Users with Self-Claim: {self_claim_users} | Claimable: {format_eth(total_claimable)}")
+    else:
+        print("Not migrated - run: python migrate_self_claim_fees.py")
+    
     conn.close()
 
 def detailed_stats():
@@ -146,7 +164,70 @@ def detailed_stats():
             source = row['source_type'].replace('_', ' ').title()
             print(f"  • {source}: {format_eth(row['total'])} ({row['count']} transactions)")
     
-    # 3. Top Users
+    # 3. Self-Claim Fees Overview
+    print_section("💰 SELF-CLAIM FEES SYSTEM")
+    
+    # Check if new tables exist
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_fee_settings'")
+    if cursor.fetchone():
+        # Fee capture preferences
+        cursor = conn.execute("""
+            SELECT 
+                COUNT(*) as total_users,
+                SUM(CASE WHEN fee_capture_enabled = 1 THEN 1 ELSE 0 END) as self_claim_enabled,
+                SUM(CASE WHEN fee_capture_enabled = 0 THEN 1 ELSE 0 END) as community_split
+            FROM user_fee_settings
+        """)
+        fee_prefs = cursor.fetchone()
+        
+        if fee_prefs['total_users'] > 0:
+            print(f"Fee Capture Preferences:")
+            print(f"  Self-Claim Enabled: {fee_prefs['self_claim_enabled']} users")
+            print(f"  Community Split: {fee_prefs['community_split']} users")
+        else:
+            print("No fee capture preferences set yet")
+        
+        # Deployment fees stats
+        cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='deployment_fees'")
+        if cursor.fetchone():
+            cursor = conn.execute("""
+                SELECT 
+                    COUNT(*) as total_deployments,
+                    COUNT(DISTINCT username) as unique_users,
+                    SUM(CASE WHEN user_claimable_amount > 0 THEN user_claimable_amount ELSE 0 END) as total_claimable,
+                    SUM(claimed_amount) as total_claimed,
+                    COUNT(CASE WHEN status = 'claimable' THEN 1 END) as pending_claims
+                FROM deployment_fees
+            """)
+            fee_stats = cursor.fetchone()
+            
+            print(f"\nDeployment Fee Statistics:")
+            print(f"  Tracked Deployments: {fee_stats['total_deployments']:,}")
+            print(f"  Users with Fees: {fee_stats['unique_users']}")
+            print(f"  Total Claimable: {format_eth(fee_stats['total_claimable'] or 0)}")
+            print(f"  Total Claimed: {format_eth(fee_stats['total_claimed'] or 0)}")
+            print(f"  Pending Claims: {fee_stats['pending_claims']}")
+            
+            # Top users with claimable fees
+            cursor = conn.execute("""
+                SELECT username, SUM(user_claimable_amount) as claimable
+                FROM deployment_fees
+                WHERE user_claimable_amount > 0
+                GROUP BY username
+                ORDER BY claimable DESC
+                LIMIT 5
+            """)
+            
+            top_claimers = cursor.fetchall()
+            if top_claimers:
+                print(f"\nTop Users with Claimable Fees:")
+                for i, row in enumerate(top_claimers, 1):
+                    print(f"  {i}. @{row['username']}: {format_eth(row['claimable'])}")
+    else:
+        print("Self-claim fees system not yet migrated")
+        print("Run: python migrate_self_claim_fees.py")
+    
+    # 4. Top Users
     print_section("🏆 TOP DEPLOYERS")
     cursor = conn.execute("""
         SELECT username, COUNT(*) as count,
@@ -160,7 +241,7 @@ def detailed_stats():
     for i, row in enumerate(cursor.fetchall(), 1):
         print(f"{i:2}. @{row['username']:<20} - {row['successful']} successful ({row['count']} total)")
     
-    # 4. Popular Tokens
+    # 5. Popular Tokens
     print_section("🪙 MOST DEPLOYED TOKENS")
     cursor = conn.execute("""
         SELECT token_symbol, COUNT(*) as count
@@ -175,7 +256,7 @@ def detailed_stats():
         bar = "█" * min(20, row['count'])
         print(f"{i:2}. ${row['token_symbol']:<10} {bar} {row['count']}")
     
-    # 5. Daily Trend
+    # 6. Daily Trend
     print_section("📈 LAST 7 DAYS TREND")
     cursor = conn.execute("""
         SELECT 
@@ -209,7 +290,11 @@ def export_data():
     print(f"\n📁 Exporting to: {export_dir}/")
     print("="*50)
     
-    tables = ["deployments", "users", "deposits", "daily_limits", "balance_sources", "fee_claims"]
+    # Updated table list to include new self-claim fees tables
+    tables = [
+        "deployments", "users", "deposits", "daily_limits", 
+        "balance_sources", "fee_claims", "user_fee_settings", "deployment_fees"
+    ]
     exported_count = 0
     
     for table in tables:
@@ -241,6 +326,7 @@ def export_data():
             f.write(f"Klik Finance Database Export\n")
             f.write(f"Generated: {datetime.now()}\n")
             f.write(f"Files exported: {exported_count}\n")
+            f.write(f"Includes self-claim fees data\n")
         
         print(f"\n✅ Export complete! {exported_count} tables exported.")
     else:
