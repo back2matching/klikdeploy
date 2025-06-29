@@ -197,31 +197,43 @@ class DeploymentDatabase:
     
     def get_total_user_deposits(self) -> float:
         """Get total balance of all user deposits"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(balance), 0) FROM users WHERE balance > 0"
-            )
-            total = cursor.fetchone()[0]
-            return float(total)
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT COALESCE(SUM(balance), 0) FROM users WHERE balance > 0"
+                )
+                total = cursor.fetchone()[0]
+                return float(total)
+        except Exception as e:
+            self.logger.error(f"Error getting total user deposits: {e}")
+            return 0.0
     
     def get_user_balance(self, username: str) -> float:
         """Get user's ETH balance from database"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT balance FROM users WHERE LOWER(twitter_username) = LOWER(?)",
-                (username,)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else 0.0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT balance FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+                    (username,)
+                )
+                result = cursor.fetchone()
+                return result[0] if result else 0.0
+        except Exception as e:
+            self.logger.error(f"Error getting user balance for {username}: {e}")
+            return 0.0
     
     def get_balance_by_source(self, source_type: str) -> float:
         """Get total balance from a specific source type"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = ?",
-                (source_type,)
-            )
-            return float(cursor.fetchone()[0])
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = ?",
+                    (source_type,)
+                )
+                return float(cursor.fetchone()[0])
+        except Exception as e:
+            self.logger.error(f"Error getting balance by source {source_type}: {e}")
+            return 0.0
     
     def check_holder_status(self, username: str) -> Tuple[bool, Optional[str]]:
         """Check if user is a verified holder
@@ -229,32 +241,37 @@ class DeploymentDatabase:
         Returns:
             Tuple of (is_holder, eth_address)
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT is_holder, eth_address FROM users WHERE LOWER(twitter_username) = LOWER(?)",
-                (username,)
-            )
-            result = cursor.fetchone()
-            
-            if not result:
-                return False, None
-            
-            is_holder, wallet = result
-            
-            # SECURITY: Check if user has ever deposited from this wallet
-            # This proves they own the wallet
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND LOWER(from_address) = LOWER(?) AND confirmed = 1",
-                (username, wallet)
-            )
-            deposit_count = cursor.fetchone()[0]
-            
-            if deposit_count == 0:
-                # No deposits from this wallet = not verified
-                self.logger.info(f"@{username} has not deposited from wallet {wallet[:6]}...{wallet[-4:]} - holder benefits disabled")
-                return False, None
-            
-            return bool(is_holder), wallet
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT is_holder, eth_address FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+                    (username,)
+                )
+                result = cursor.fetchone()
+                
+                if not result:
+                    return False, None
+                
+                is_holder, wallet = result
+                
+                # SECURITY: Check if user has ever deposited from this wallet
+                # This proves they own the wallet
+                cursor = conn.execute(
+                    "SELECT COUNT(*) FROM deposits WHERE LOWER(twitter_username) = LOWER(?) AND LOWER(from_address) = LOWER(?) AND confirmed = 1",
+                    (username, wallet)
+                )
+                deposit_count = cursor.fetchone()[0]
+                
+                if deposit_count == 0:
+                    # No deposits from this wallet = not verified
+                    self.logger.info(f"@{username} has not deposited from wallet {wallet[:6]}...{wallet[-4:]} - holder benefits disabled")
+                    return False, None
+                
+                return bool(is_holder), wallet
+        except Exception as e:
+            self.logger.error(f"Error checking holder status for {username}: {e}")
+            # Return safe defaults to prevent NoneType unpacking error
+            return False, None
     
     def update_holder_status(self, username: str, is_holder: bool, balance: float) -> None:
         """Update user's holder status"""
@@ -266,24 +283,34 @@ class DeploymentDatabase:
     
     def get_deployment_stats(self) -> Dict:
         """Get deployment statistics for the last 24 hours"""
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            cursor = conn.execute('''
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
-                    COUNT(DISTINCT username) as unique_users,
-                    SUM(CASE WHEN image_ipfs IS NOT NULL THEN 1 ELSE 0 END) as with_images
-                FROM deployments
-                WHERE requested_at > datetime('now', '-24 hours')
-            ''')
-            stats = cursor.fetchone()
-        
-        return {
-            'total_requests_24h': stats[0],
-            'successful_deploys_24h': stats[1],
-            'unique_users_24h': stats[2],
-            'tokens_with_images_24h': stats[3]
-        }
+        try:
+            with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+                cursor = conn.execute('''
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
+                        COUNT(DISTINCT username) as unique_users,
+                        SUM(CASE WHEN image_ipfs IS NOT NULL THEN 1 ELSE 0 END) as with_images
+                    FROM deployments
+                    WHERE requested_at > datetime('now', '-24 hours')
+                ''')
+                stats = cursor.fetchone()
+            
+            return {
+                'total_requests_24h': stats[0] if stats else 0,
+                'successful_deploys_24h': stats[1] if stats else 0,
+                'unique_users_24h': stats[2] if stats else 0,
+                'tokens_with_images_24h': stats[3] if stats else 0
+            }
+        except Exception as e:
+            self.logger.error(f"Error getting deployment stats: {e}")
+            # Return safe defaults
+            return {
+                'total_requests_24h': 0,
+                'successful_deploys_24h': 0,
+                'unique_users_24h': 0,
+                'tokens_with_images_24h': 0
+            }
     
     def update_image_ipfs(self, tweet_id: str, image_ipfs: str) -> None:
         """Update the image IPFS hash for a deployment"""
@@ -299,54 +326,166 @@ class DeploymentDatabase:
         Returns:
             tuple: (can_deploy, message, days_until_cooldown_ends)
         """
-        now = datetime.now()
-        seven_days_ago = now - timedelta(days=7)
-        
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            # Get or create cooldown record
-            cursor = conn.execute('''
-                SELECT free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys, spam_attempts
-                FROM deployment_cooldowns 
-                WHERE LOWER(username) = LOWER(?)
-            ''', (username,))
+        try:
+            now = datetime.now()
+            seven_days_ago = now - timedelta(days=7)
             
-            cooldown_data = cursor.fetchone()
-            
-            if not cooldown_data:
-                # First time user
-                conn.execute('''
-                    INSERT INTO deployment_cooldowns (username, free_deploys_7d, last_free_deploy, spam_attempts, updated_at)
-                    VALUES (?, 0, ?, 0, ?)
-                ''', (username.lower(), now, now))
-                return True, "First deployment allowed", 0
-            
-            free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys, spam_attempts = cooldown_data
-            
-            # Check if currently in cooldown
-            if cooldown_until and cooldown_until > now:
-                days_left = (cooldown_until - now).days + 1
+            with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+                # Get or create cooldown record
+                cursor = conn.execute('''
+                    SELECT free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys, spam_attempts
+                    FROM deployment_cooldowns 
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (username,))
                 
-                # NEW ESCALATION SYSTEM: Track spam attempts and escalate at 10
-                spam_attempts += 1
+                cooldown_data = cursor.fetchone()
                 
-                if spam_attempts >= 10:
-                    # 10th spam attempt = 30-day ban
-                    escalated_end = now + timedelta(days=30)
+                if not cooldown_data:
+                    # First time user
                     conn.execute('''
-                        UPDATE deployment_cooldowns 
-                        SET cooldown_until = ?, spam_attempts = ?, updated_at = ?
-                        WHERE LOWER(username) = LOWER(?)
-                    ''', (escalated_end, spam_attempts, now, username))
-                    return False, f"SPAM BAN: 10 attempts during cooldown. 30-day ban applied", 30
-                else:
-                    # Update spam attempt count and show warning WITH DEPLOYMENTS
-                    conn.execute('''
-                        UPDATE deployment_cooldowns 
-                        SET spam_attempts = ?, updated_at = ?
-                        WHERE LOWER(username) = LOWER(?)
-                    ''', (spam_attempts, now, username))
+                        INSERT INTO deployment_cooldowns (username, free_deploys_7d, last_free_deploy, spam_attempts, updated_at)
+                        VALUES (?, 0, ?, 0, ?)
+                    ''', (username.lower(), now, now))
+                    return True, "First deployment allowed", 0
+                
+                free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys, spam_attempts = cooldown_data
+                
+                # Check if currently in cooldown
+                if cooldown_until and cooldown_until > now:
+                    days_left = (cooldown_until - now).days + 1
                     
-                    # Get their deployments to show in the warning message  
+                    # NEW ESCALATION SYSTEM: Track spam attempts and escalate at 10
+                    spam_attempts += 1
+                    
+                    if spam_attempts >= 10:
+                        # 10th spam attempt = 30-day ban
+                        escalated_end = now + timedelta(days=30)
+                        conn.execute('''
+                            UPDATE deployment_cooldowns 
+                            SET cooldown_until = ?, spam_attempts = ?, updated_at = ?
+                            WHERE LOWER(username) = LOWER(?)
+                        ''', (escalated_end, spam_attempts, now, username))
+                        return False, f"SPAM BAN: 10 attempts during cooldown. 30-day ban applied", 30
+                    else:
+                        # Update spam attempt count and show warning WITH DEPLOYMENTS
+                        conn.execute('''
+                            UPDATE deployment_cooldowns 
+                            SET spam_attempts = ?, updated_at = ?
+                            WHERE LOWER(username) = LOWER(?)
+                        ''', (spam_attempts, now, username))
+                        
+                        # Get their deployments to show in the warning message  
+                        cursor = conn.execute('''
+                            SELECT token_symbol, token_address 
+                            FROM deployments 
+                            WHERE LOWER(username) = LOWER(?) 
+                            AND requested_at > ? 
+                            AND status = 'success' 
+                            AND token_address IS NOT NULL
+                            ORDER BY deployed_at DESC 
+                            LIMIT 3
+                        ''', (username, seven_days_ago))
+                        
+                        recent_deployments = cursor.fetchall()
+                        
+                        # Show escalating warnings with deployments
+                        attempts_left = 10 - spam_attempts
+                        reset_date = cooldown_until.strftime('%m/%d')
+                        ban_date = (now + timedelta(days=30)).strftime('%m/%d')
+                        
+                        if recent_deployments:
+                            deploy_list = []
+                            for symbol, address in recent_deployments:
+                                deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                            deployments_text = "\n".join(deploy_list)
+                            
+                            return False, f"Weekly limit exceeded! ({spam_attempts}/10 warnings)\n\n{deployments_text}\n\nReset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})", days_left
+                        else:
+                            return False, f"Weekly limit exceeded! ({spam_attempts}/10 warnings). Reset: {reset_date}. {attempts_left} more = 30-day ban ({ban_date})", days_left
+                
+                # Count free deployments in last 7 days (more accurate)
+                cursor = conn.execute('''
+                    SELECT COUNT(*) FROM deployments 
+                    WHERE LOWER(username) = LOWER(?) 
+                    AND requested_at > ? 
+                    AND status = 'success'
+                ''', (username, seven_days_ago))
+                
+                actual_free_deploys_7d = cursor.fetchone()[0]
+                
+                # Get list of recent deployments for debugging
+                cursor = conn.execute('''
+                    SELECT token_symbol, deployed_at 
+                    FROM deployments 
+                    WHERE LOWER(username) = LOWER(?) 
+                    AND requested_at > ? 
+                    AND status = 'success'
+                    ORDER BY deployed_at DESC
+                    LIMIT 5
+                ''', (username, seven_days_ago))
+                
+                recent_deploys = cursor.fetchall()
+                if recent_deploys:
+                    deploy_list = ", ".join([f"${symbol}" for symbol, _ in recent_deploys])
+                    self.logger.info(f"@{username} has {actual_free_deploys_7d} deploys in 7d: {deploy_list}")
+                
+                # Update the count if different
+                if actual_free_deploys_7d != free_deploys_7d:
+                    free_deploys_7d = actual_free_deploys_7d
+                    conn.execute('''
+                        UPDATE deployment_cooldowns 
+                        SET free_deploys_7d = ?, updated_at = ?
+                        WHERE LOWER(username) = LOWER(?)
+                    ''', (free_deploys_7d, now, username))
+                
+                # Check if they deployed yesterday (for consecutive days tracking)
+                yesterday = now.date() - timedelta(days=1)
+                if last_free_deploy and last_free_deploy.date() == yesterday:
+                    # Consecutive day deployment
+                    consecutive_days += 1
+                elif last_free_deploy and last_free_deploy.date() < yesterday:
+                    # Reset consecutive days
+                    consecutive_days = 0
+                
+                # Progressive cooldown logic - RELAXED FOR NEW SYSTEM
+                # Free users get 3 per week, so only apply cooldown after exceeding that
+                
+                # Count deployments today
+                today_start = datetime.combine(now.date(), datetime.min.time())
+                cursor = conn.execute('''
+                    SELECT COUNT(*) FROM deployments 
+                    WHERE LOWER(username) = LOWER(?) 
+                    AND requested_at >= ? 
+                    AND status = 'success'
+                ''', (username, today_start))
+                
+                deploys_today = cursor.fetchone()[0]
+                
+                # Debug logging
+                self.logger.info(f"@{username} deployment check: {deploys_today} today, {actual_free_deploys_7d} this week")
+                
+                # SERIOUS SPAM: 5+ attempts in ONE DAY = immediate 30-day ban  
+                if deploys_today >= 5:  # Already did 5+ today = serious spam
+                    # Apply 30-day ban for serious spam
+                    cooldown_end = now + timedelta(days=30)
+                    conn.execute('''
+                        UPDATE deployment_cooldowns 
+                        SET cooldown_until = ?, spam_attempts = 0, consecutive_days = ?, updated_at = ?
+                        WHERE LOWER(username) = LOWER(?)
+                    ''', (cooldown_end, consecutive_days, now, username))
+                    return False, "SPAM BAN: 5+ attempts in 24 hours. 30-day ban applied", 30
+                
+                # Weekly limit check: 4th deployment attempt gets 7-day cooldown + show deployments
+                elif free_deploys_7d >= 3:  # Already did 3 this week, trying for 4th
+                    # Apply 7-day cooldown for exceeding weekly allowance
+                    cooldown_end = now + timedelta(days=7)
+                    conn.execute('''
+                        UPDATE deployment_cooldowns 
+                        SET cooldown_until = ?, spam_attempts = 0, consecutive_days = ?, updated_at = ?
+                        WHERE LOWER(username) = LOWER(?)
+                    ''', (cooldown_end, consecutive_days, now, username))
+                    
+                    # Get their deployments to show in the message
                     cursor = conn.execute('''
                         SELECT token_symbol, token_address 
                         FROM deployments 
@@ -359,142 +498,37 @@ class DeploymentDatabase:
                     ''', (username, seven_days_ago))
                     
                     recent_deployments = cursor.fetchall()
-                    
-                    # Show escalating warnings with deployments
-                    attempts_left = 10 - spam_attempts
-                    reset_date = cooldown_until.strftime('%m/%d')
-                    ban_date = (now + timedelta(days=30)).strftime('%m/%d')
-                    
                     if recent_deployments:
                         deploy_list = []
                         for symbol, address in recent_deployments:
                             deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
                         deployments_text = "\n".join(deploy_list)
-                        
-                        return False, f"Weekly limit exceeded! ({spam_attempts}/10 warnings)\n\n{deployments_text}\n\nReset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})", days_left
+                        return False, f"Weekly limit reached! (3/3 used)\n\n{deployments_text}\n\nWait 7 days OR deposit: t.me/DeployOnKlik", 7
                     else:
-                        return False, f"Weekly limit exceeded! ({spam_attempts}/10 warnings). Reset: {reset_date}. {attempts_left} more = 30-day ban ({ban_date})", days_left
-            
-            # Count free deployments in last 7 days (more accurate)
-            cursor = conn.execute('''
-                SELECT COUNT(*) FROM deployments 
-                WHERE LOWER(username) = LOWER(?) 
-                AND requested_at > ? 
-                AND status = 'success'
-            ''', (username, seven_days_ago))
-            
-            actual_free_deploys_7d = cursor.fetchone()[0]
-            
-            # Get list of recent deployments for debugging
-            cursor = conn.execute('''
-                SELECT token_symbol, deployed_at 
-                FROM deployments 
-                WHERE LOWER(username) = LOWER(?) 
-                AND requested_at > ? 
-                AND status = 'success'
-                ORDER BY deployed_at DESC
-                LIMIT 5
-            ''', (username, seven_days_ago))
-            
-            recent_deploys = cursor.fetchall()
-            if recent_deploys:
-                deploy_list = ", ".join([f"${symbol}" for symbol, _ in recent_deploys])
-                self.logger.info(f"@{username} has {actual_free_deploys_7d} deploys in 7d: {deploy_list}")
-            
-            # Update the count if different
-            if actual_free_deploys_7d != free_deploys_7d:
-                free_deploys_7d = actual_free_deploys_7d
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET free_deploys_7d = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (free_deploys_7d, now, username))
-            
-            # Check if they deployed yesterday (for consecutive days tracking)
-            yesterday = now.date() - timedelta(days=1)
-            if last_free_deploy and last_free_deploy.date() == yesterday:
-                # Consecutive day deployment
-                consecutive_days += 1
-            elif last_free_deploy and last_free_deploy.date() < yesterday:
-                # Reset consecutive days
-                consecutive_days = 0
-            
-            # Progressive cooldown logic - RELAXED FOR NEW SYSTEM
-            # Free users get 3 per week, so only apply cooldown after exceeding that
-            
-            # Count deployments today
-            today_start = datetime.combine(now.date(), datetime.min.time())
-            cursor = conn.execute('''
-                SELECT COUNT(*) FROM deployments 
-                WHERE LOWER(username) = LOWER(?) 
-                AND requested_at >= ? 
-                AND status = 'success'
-            ''', (username, today_start))
-            
-            deploys_today = cursor.fetchone()[0]
-            
-            # Debug logging
-            self.logger.info(f"@{username} deployment check: {deploys_today} today, {actual_free_deploys_7d} this week")
-            
-            # SERIOUS SPAM: 5+ attempts in ONE DAY = immediate 30-day ban  
-            if deploys_today >= 5:  # Already did 5+ today = serious spam
-                # Apply 30-day ban for serious spam
-                cooldown_end = now + timedelta(days=30)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, spam_attempts = 0, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
-                return False, "SPAM BAN: 5+ attempts in 24 hours. 30-day ban applied", 30
-            
-            # Weekly limit check: 4th deployment attempt gets 7-day cooldown + show deployments
-            elif free_deploys_7d >= 3:  # Already did 3 this week, trying for 4th
-                # Apply 7-day cooldown for exceeding weekly allowance
-                cooldown_end = now + timedelta(days=7)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, spam_attempts = 0, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
+                        return False, "Weekly limit: Used all 3 free deploys. 7-day cooldown applied", 7
                 
-                # Get their deployments to show in the message
-                cursor = conn.execute('''
-                    SELECT token_symbol, token_address 
-                    FROM deployments 
-                    WHERE LOWER(username) = LOWER(?) 
-                    AND requested_at > ? 
-                    AND status = 'success' 
-                    AND token_address IS NOT NULL
-                    ORDER BY deployed_at DESC 
-                    LIMIT 3
-                ''', (username, seven_days_ago))
+                # Update last deployment time
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET consecutive_days = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (consecutive_days, now, username))
                 
-                recent_deployments = cursor.fetchall()
-                if recent_deployments:
-                    deploy_list = []
-                    for symbol, address in recent_deployments:
-                        deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
-                    deployments_text = "\n".join(deploy_list)
-                    return False, f"Weekly limit reached! (3/3 used)\n\n{deployments_text}\n\nWait 7 days OR deposit: t.me/DeployOnKlik", 7
+                # More informative message about limits
+                if deploys_today >= 4:
+                    return True, f"⚠️ Deployment allowed (4 today - ONE MORE and you'll get 30-day ban!)", 0
+                elif free_deploys_7d == 2:
+                    return True, f"⚠️ Deployment allowed (2/3 free used this week - ONE MORE and next attempt gets 7-day cooldown!)", 0
+                elif free_deploys_7d == 1:
+                    return True, f"Deployment allowed (1/3 free used this week)", 0
                 else:
-                    return False, "Weekly limit: Used all 3 free deploys. 7-day cooldown applied", 7
-            
-            # Update last deployment time
-            conn.execute('''
-                UPDATE deployment_cooldowns 
-                SET consecutive_days = ?, updated_at = ?
-                WHERE LOWER(username) = LOWER(?)
-            ''', (consecutive_days, now, username))
-            
-            # More informative message about limits
-            if deploys_today >= 4:
-                return True, f"⚠️ Deployment allowed (4 today - ONE MORE and you'll get 30-day ban!)", 0
-            elif free_deploys_7d == 2:
-                return True, f"⚠️ Deployment allowed (2/3 free used this week - ONE MORE and next attempt gets 7-day cooldown!)", 0
-            elif free_deploys_7d == 1:
-                return True, f"Deployment allowed (1/3 free used this week)", 0
-            else:
-                return True, f"Deployment allowed (first free this week)", 0
+                    return True, f"Deployment allowed (first free this week)", 0
+        
+        except Exception as e:
+            self.logger.error(f"Error checking progressive cooldown for {username}: {e}")
+            # Return safe defaults to prevent NoneType unpacking error
+            # Allow deployment but log the error
+            return True, "Error checking cooldown - allowing deployment", 0
     
     def update_cooldown_after_deployment(self, username: str, deployment_type: str) -> None:
         """Update cooldown tracking after a successful deployment"""
@@ -525,35 +559,41 @@ class DeploymentDatabase:
         Returns:
             int: Number of holder deployments in the last 7 days
         """
-        seven_days_ago = datetime.now() - timedelta(days=7)
-        
-        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
-            # Count holder deployments in last 7 days from deployments table
-            cursor = conn.execute('''
-                SELECT COUNT(*) FROM deployments 
-                WHERE LOWER(username) = LOWER(?) 
-                AND requested_at > ? 
-                AND status = 'success'
-                AND tx_hash IN (
-                    SELECT tx_hash FROM deployments d
-                    INNER JOIN users u ON LOWER(d.username) = LOWER(u.twitter_username)
-                    WHERE u.is_holder = 1
-                )
-            ''', (username, seven_days_ago))
+        try:
+            seven_days_ago = datetime.now() - timedelta(days=7)
             
-            holder_deploys_7d = cursor.fetchone()[0]
-            
-            # Also check from daily_limits for more accurate count
-            cursor = conn.execute('''
-                SELECT COALESCE(SUM(holder_deploys), 0) 
-                FROM daily_limits 
-                WHERE LOWER(username) = LOWER(?) AND date >= date(?)
-            ''', (username, seven_days_ago))
-            
-            daily_limits_count = cursor.fetchone()[0]
-            
-            # Return the maximum of both counts (in case of discrepancy)
-            return max(holder_deploys_7d, daily_limits_count)
+            with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+                # Count holder deployments in last 7 days from deployments table
+                cursor = conn.execute('''
+                    SELECT COUNT(*) FROM deployments 
+                    WHERE LOWER(username) = LOWER(?) 
+                    AND requested_at > ? 
+                    AND status = 'success'
+                    AND tx_hash IN (
+                        SELECT tx_hash FROM deployments d
+                        INNER JOIN users u ON LOWER(d.username) = LOWER(u.twitter_username)
+                        WHERE u.is_holder = 1
+                    )
+                ''', (username, seven_days_ago))
+                
+                holder_deploys_7d = cursor.fetchone()[0]
+                
+                # Also check from daily_limits for more accurate count
+                cursor = conn.execute('''
+                    SELECT COALESCE(SUM(holder_deploys), 0) 
+                    FROM daily_limits 
+                    WHERE LOWER(username) = LOWER(?) AND date >= date(?)
+                ''', (username, seven_days_ago))
+                
+                daily_limits_count = cursor.fetchone()[0]
+                
+                # Return the maximum of both counts (in case of discrepancy)
+                return max(holder_deploys_7d, daily_limits_count)
+                
+        except Exception as e:
+            self.logger.error(f"Error checking holder weekly deployments for {username}: {e}")
+            # Return safe default to prevent errors
+            return 0
     
     def update_daily_limits(self, username: str, deployment_type: str) -> None:
         """Update daily deployment limits"""
@@ -615,11 +655,15 @@ class DeploymentDatabase:
     
     def get_successful_deploys_count(self) -> int:
         """Get total count of successful deployments"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM deployments WHERE status = 'success'"
-            )
-            return cursor.fetchone()[0]
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) FROM deployments WHERE status = 'success'"
+                )
+                return cursor.fetchone()[0]
+        except Exception as e:
+            self.logger.error(f"Error getting successful deploys count: {e}")
+            return 0
     
     def record_free_deployment_gas_cost(self, gas_cost: float, tx_hash: str, description: str):
         """Record gas cost for free deployment (deduct from treasury, track as expense)"""
@@ -645,23 +689,29 @@ class DeploymentDatabase:
         Returns:
             Tuple of (free_deploys_today, holder_deploys_today)
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute('''
-                SELECT free_deploys, holder_deploys 
-                FROM daily_limits 
-                WHERE username = ? AND date = ?
-            ''', (username.lower(), date))
-            
-            daily_stats = cursor.fetchone()
-            if daily_stats:
-                return daily_stats
-            else:
-                # Create record if it doesn't exist
-                conn.execute('''
-                    INSERT INTO daily_limits (username, date, free_deploys, holder_deploys)
-                    VALUES (?, ?, 0, 0)
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute('''
+                    SELECT free_deploys, holder_deploys 
+                    FROM daily_limits 
+                    WHERE username = ? AND date = ?
                 ''', (username.lower(), date))
-                return 0, 0
+                
+                daily_stats = cursor.fetchone()
+                if daily_stats:
+                    return daily_stats
+                else:
+                    # Create record if it doesn't exist
+                    conn.execute('''
+                        INSERT INTO daily_limits (username, date, free_deploys, holder_deploys)
+                        VALUES (?, ?, 0, 0)
+                    ''', (username.lower(), date))
+                    conn.commit()
+                    return (0, 0)
+        except Exception as e:
+            self.logger.error(f"Error getting daily deployment stats for {username}: {e}")
+            # Return safe defaults to prevent NoneType unpacking error
+            return (0, 0)
     
     def get_last_successful_deployment(self, username: str) -> Optional[Tuple[str, str]]:
         """Get the user's last successful deployment

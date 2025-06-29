@@ -329,7 +329,12 @@ class KlikTokenDeployer:
         Returns:
             tuple: (can_deploy, message, days_until_cooldown_ends)
         """
-        return self.db.check_progressive_cooldown(username)
+        try:
+            return self.db.check_progressive_cooldown(username)
+        except Exception as e:
+            self.logger.error(f"Error checking progressive cooldown for {username}: {e}")
+            # Return safe defaults to prevent NoneType unpacking error
+            return True, "Error checking cooldown - allowing deployment", 0
     
     def check_holder_weekly_deployments(self, username: str) -> int:
         """Check how many holder deployments user has made this week
@@ -337,7 +342,12 @@ class KlikTokenDeployer:
         Returns:
             int: Number of holder deployments in the last 7 days
         """
-        return self.db.check_holder_weekly_deployments(username)
+        try:
+            return self.db.check_holder_weekly_deployments(username)
+        except Exception as e:
+            self.logger.error(f"Error checking holder weekly deployments for {username}: {e}")
+            # Return safe default to prevent errors
+            return 0
     
     async def generate_salt_and_address(self, token_name: str, token_symbol: str) -> Tuple[str, str]:
         """Generate salt using Klik Finance API and calculate predicted address"""
@@ -383,7 +393,7 @@ class KlikTokenDeployer:
             raise Exception(f"Failed to generate vanity salt: {e}")
     
     def _calculate_create2_address(self, salt: str, bytecode_hash: str) -> str:
-        """Calculate CREATE2 address"""
+        """Calculate CREATE2 address using the same method as our successful tests"""
         try:
             # Remove 0x prefix for calculation
             factory = self.factory_address[2:] if self.factory_address.startswith('0x') else self.factory_address
@@ -392,7 +402,10 @@ class KlikTokenDeployer:
             
             # CREATE2 formula: keccak256(0xff + factory + salt + bytecode_hash)
             data = bytes.fromhex("ff" + factory + salt_clean + bytecode_clean)
-            hash_result = keccak(data)
+            
+            # Use eth_hash keccak (same as our successful tests)
+            from eth_hash.auto import keccak as eth_keccak
+            hash_result = eth_keccak(data)
             
             # Address = last 20 bytes
             address = "0x" + hash_result[-20:].hex()
@@ -487,35 +500,70 @@ class KlikTokenDeployer:
     def parse_tweet_for_token(self, tweet_text: str) -> Optional[Dict[str, str]]:
         """Parse tweet text to extract token name/symbol
         
-        REQUIRES $ symbol to reduce spam/clutter
+        REQUIRES proper deployment format to prevent accidental deployments
         
-        Examples:
+        Valid formats:
         "@DeployOnKlik $MEME" -> {symbol: "MEME", name: "MEME"}
         "@DeployOnKlik $DOG - DogeCoin" -> {symbol: "DOG", name: "DogeCoin"}
         "@DeployOnKlik $CAT + CatCoin" -> {symbol: "CAT", name: "CatCoin"}
-        "@DeployOnKlik PEPE" -> None (no $ symbol - rejected)
+        
+        Invalid (conversation mentions):
+        "@user @DeployOnKlik thoughts on $TOKEN" -> None (not deployment format)
+        "@DeployOnKlik what do you think of $TOKEN" -> None (asking opinion)
         
         Returns:
-            Dict with 'symbol' and 'name' if valid
-            Dict with 'error' and 'error_type' if invalid
+            Dict with 'symbol' and 'name' if valid deployment request
+            Dict with 'error' and 'error_type' if invalid deployment format
             None if not a deployment attempt
         """
-        # Remove mentions and clean up
-        text = tweet_text.strip()
-        text = re.sub(r'@\w+', '', text).strip()
+        original_text = tweet_text.strip()
         
-        # REQUIRE $SYMBOL pattern - no $ means no deployment
-        symbol_match = re.search(r'\$([a-zA-Z0-9]+)', text)
+        # STRICT FORMAT CHECK: Must start with @DeployOnKlik followed by $SYMBOL
+        # This prevents accidental deployments from conversation mentions
+        
+        # Pattern 1: @DeployOnKlik $SYMBOL (direct deployment)
+        # Pattern 2: @DeployOnKlik $SYMBOL - Name (with name)
+        # Pattern 3: @DeployOnKlik $SYMBOL + Name (with name)
+        
+        # Case-insensitive check for our bot mention followed by $SYMBOL
+        bot_mention_pattern = rf'@{re.escape(self.bot_username.lower())}\s+\$([a-zA-Z0-9]+)'
+        symbol_match = re.search(bot_mention_pattern, original_text.lower())
         
         if not symbol_match:
-            # No $ symbol found - reject to reduce clutter
+            # Check if they mentioned our bot but without proper format
+            if f'@{self.bot_username.lower()}' in original_text.lower():
+                # They mentioned us but didn't use proper format - check if it looks like deployment intent
+                dollar_symbols = re.findall(r'\$([a-zA-Z0-9]+)', original_text)
+                if dollar_symbols:
+                    # They mentioned us AND have $ symbols, but wrong format
+                    # Check for conversation keywords that indicate NOT a deployment
+                    conversation_keywords = [
+                        'thoughts on', 'think of', 'opinion on', 'what about', 
+                        'how about', 'check out', 'look at', 'see this',
+                        'alpha', 'bullish', 'bearish', 'pump', 'dump',
+                        'bought', 'sold', 'hodl', 'hold', 'moon'
+                    ]
+                    
+                    text_lower = original_text.lower()
+                    is_conversation = any(keyword in text_lower for keyword in conversation_keywords)
+                    
+                    if is_conversation:
+                        # This is clearly a conversation mention, not a deployment
+                        return None
+                    else:
+                        # Wrong format but might be trying to deploy
+                        return {
+                            'error': f'Wrong format! Use: @{self.bot_username} $SYMBOL or @{self.bot_username} $SYMBOL - Token Name',
+                            'error_type': 'wrong_format'
+                        }
             return None
-            
+        
+        # Extract symbol from the match and convert to uppercase
         symbol = symbol_match.group(1).upper()
         
         # BLOCK DOK TICKER - prevent spam of the bot's own token
         if symbol == 'DOK':
-            self.logger.warning(f"Blocked DOK ticker deployment attempt from tweet: {tweet_text[:50]}...")
+            self.logger.warning(f"Blocked DOK ticker deployment attempt from tweet: {original_text[:50]}...")
             return {'error': 'DOK ticker is reserved', 'error_type': 'reserved_ticker'}
         
         # Check symbol length BEFORE other validations
@@ -538,16 +586,17 @@ class KlikTokenDeployer:
         if not symbol:
             return None
         
-        # Look for name after a dash or plus sign, but stop at URLs or mentions
-        name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–+]\s*([^@\s]+(?:\s+[^@\s]+)*?)(?:\s+https?://|\s+@|\s*$)', text)
-        if not name_match:
-            # Try simpler pattern without URL/mention check
-            name_match = re.search(r'\$[a-zA-Z0-9]+\s*[-–+]\s*([^@\n]+?)(?:\s+https?://|\s*$)', text)
+        # Look for name after a dash or plus sign in the original text
+        # Pattern: @DeployOnKlik $SYMBOL - Token Name
+        name_pattern = rf'@{re.escape(self.bot_username)}\s+\${re.escape(symbol)}\s*[-–+]\s*([^@\n]+?)(?:\s*$)'
+        name_match = re.search(name_pattern, original_text, re.IGNORECASE)
         
         if name_match:
             name = name_match.group(1).strip()
             # Remove any trailing URLs that might have been caught
             name = re.sub(r'\s*https?://\S+\s*$', '', name).strip()
+            # Remove any extra whitespace
+            name = ' '.join(name.split())
         else:
             name = symbol
         
@@ -921,9 +970,27 @@ Quick & easy deposits!"""
                 if request.predicted_address:
                     print(f"🎯 Expected address: {request.predicted_address}")
             else:
-                # Generate a random salt for CREATE2 (automated deployments)
-                salt_input = f"{request.token_name}-{request.token_symbol}-{int(time.time() * 1000)}-{os.urandom(16).hex()}"
-                salt = self.w3.keccak(text=salt_input)[:32]  # bytes32
+                # ALWAYS generate vanity salt for 0x69 addresses (not just manual mode!)
+                print("\n🔮 Generating vanity address for deployment...")
+                try:
+                    salt_hex, predicted_address = await self.generate_salt_and_address(
+                        request.token_name, 
+                        request.token_symbol
+                    )
+                    # Convert hex string to bytes32
+                    salt = bytes.fromhex(salt_hex[2:]) if salt_hex.startswith('0x') else bytes.fromhex(salt_hex)
+                    request.salt = salt_hex
+                    request.predicted_address = predicted_address
+                    
+                    print(f"🎯 Vanity address generated: {predicted_address}")
+                    print(f"   (Address starts with 0x{predicted_address[2:4]})")
+                    
+                except Exception as e:
+                    print(f"⚠️  Failed to generate vanity address: {e}")
+                    print("   Will use random salt instead")
+                    # Fall back to random salt
+                    salt_input = f"{request.token_name}-{request.token_symbol}-{int(time.time() * 1000)}-{os.urandom(16).hex()}"
+                    salt = self.w3.keccak(text=salt_input)[:32]  # bytes32
             
             # Build transaction with the new 4-parameter deployCoin function
             function_call = self.factory_contract.functions.deployCoin(
@@ -2172,7 +2239,7 @@ Your token will deploy soon ⏳"""
 Please try again in a few minutes ⏳
 
 Status: t.me/DeployOnKlik"""
-            elif "COOLDOWN" in instructions or "BAN" in instructions:
+            elif "COOLDOWN" in instructions or "BAN" in instructions or "Weekly limit" in instructions or "Cooldown" in instructions:
                 # Handle new progressive cooldown messages
                 if "SPAM BAN" in instructions or "SPAM COOLDOWN" in instructions or "30-DAY TIMEOUT" in instructions:
                     # User tried 5+ deploys in one day OR 4+ in one day - serious spam
@@ -2296,8 +2363,44 @@ Stop spamming or deposit: t.me/DeployOnKlik"""
 
 Wait 7 days OR deposit: t.me/DeployOnKlik"""
                 else:
-                    # Generic cooldown message
-                    reply_text = f"""@{username} Cooldown active! (3 free/week limit)
+                    # Handle any other cooldown message by checking for user's deployments
+                    # This catches cases where the database message format doesn't match above patterns
+                    recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
+                    
+                    if recent_deploys and len(recent_deploys) >= 3:
+                        # User has 3+ deployments this week - show them with proper limit message
+                        deploy_lines = []
+                        for symbol, address, _ in recent_deploys[:3]:  # Show up to 3
+                            if address:
+                                deploy_lines.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                            else:
+                                deploy_lines.append(f"${symbol} (no address)")
+                        
+                        deploy_text = "\n".join(deploy_lines)
+                        reply_text = f"""@{username} Weekly limit reached! (3/3 used)
+
+{deploy_text}
+
+Wait 7 days OR deposit: t.me/DeployOnKlik"""
+                    elif recent_deploys and len(recent_deploys) >= 1:
+                        # Show whatever deployments they have this week
+                        deploy_count = len(recent_deploys)
+                        deploy_lines = []
+                        for symbol, address, _ in recent_deploys:
+                            if address:
+                                deploy_lines.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                            else:
+                                deploy_lines.append(f"${symbol} (no address)")
+                        
+                        deploy_text = "\n".join(deploy_lines)
+                        reply_text = f"""@{username} Weekly limit exceeded! ({deploy_count}/3 used)
+
+{deploy_text}
+
+Wait for reset OR deposit: t.me/DeployOnKlik"""
+                    else:
+                        # Fallback if no deployments found - generic cooldown message
+                        reply_text = f"""@{username} Cooldown active! (3 free/week limit)
 
 Skip cooldown:
 💰 Deposit ETH: t.me/DeployOnKlik

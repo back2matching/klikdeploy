@@ -615,12 +615,8 @@ class TwitterMonitor:
         self.logger.info(f"Found verification tweet from @{username} with code: {verification_code}")
         
         try:
-            # Import database class
-            from deployer.database import DeploymentDatabase
-            db = DeploymentDatabase()
-            
-            # Verify the code
-            success = db.verify_twitter_account(username, verification_code)
+            # Use database instance from deployer
+            success = self.deployer.db.verify_twitter_account(username, verification_code)
             
             if success:
                 self.logger.info(f"✅ Successfully verified @{username}")

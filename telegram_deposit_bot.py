@@ -41,6 +41,10 @@ RPC_URL = os.getenv('ALCHEMY_RPC_URL')
 w3 = Web3(Web3.HTTPProvider(RPC_URL))
 account = Account.from_key(PRIVATE_KEY)
 
+# Initialize shared database instance once
+from deployer.database import DeploymentDatabase
+db = DeploymentDatabase()
+
 def escape_markdown(text: str) -> str:
     """Escape special characters for Telegram Markdown"""
     if not text:
@@ -530,8 +534,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Add fee capture information
         if is_verified:
             # Import database to check fee capture preference
-            from deployer.database import DeploymentDatabase
-            db = DeploymentDatabase()
             fee_capture_enabled = db.get_user_fee_capture_preference(twitter_username)
             fee_stats = db.get_user_fee_stats(twitter_username)
             
@@ -1905,10 +1907,6 @@ async def start_twitter_verification(update: Update, context: ContextTypes.DEFAU
         conn.close()
         return
     
-    # Import database class to generate verification code
-    from deployer.database import DeploymentDatabase
-    db = DeploymentDatabase()
-    
     # Generate verification code
     verification_code = db.generate_verification_code(twitter_username)
     
@@ -2225,10 +2223,6 @@ async def manual_verify_user(update: Update, context: ContextTypes.DEFAULT_TYPE)
     target_username = context.args[0].strip().lower().replace('@', '')
     
     try:
-        # Import database class
-        from deployer.database import DeploymentDatabase
-        db = DeploymentDatabase()
-        
         # Check if user exists
         conn = sqlite3.connect('deployments.db')
         cursor = conn.execute(
@@ -2311,9 +2305,7 @@ async def show_fee_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     twitter_username = user[0]
     
-    # Import database to get current settings
-    from deployer.database import DeploymentDatabase
-    db = DeploymentDatabase()
+    # Get current settings
     fee_capture_enabled = db.get_user_fee_capture_preference(twitter_username)
     fee_stats = db.get_user_fee_stats(twitter_username)
     
@@ -2384,9 +2376,7 @@ async def toggle_fee_capture(update: Update, context: ContextTypes.DEFAULT_TYPE,
     
     twitter_username = user[0]
     
-    # Import database to update preference
-    from deployer.database import DeploymentDatabase
-    db = DeploymentDatabase()
+    # Update preference
     success = db.set_user_fee_capture_preference(twitter_username, enable)
     
     if success:
@@ -2447,9 +2437,7 @@ async def show_claimable_fees(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     twitter_username = user[0]
     
-    # Import database to get claimable fees
-    from deployer.database import DeploymentDatabase
-    db = DeploymentDatabase()
+    # Get claimable fees
     claimable_fees = db.get_user_claimable_fees(twitter_username)
     fee_stats = db.get_user_fee_stats(twitter_username)
     
