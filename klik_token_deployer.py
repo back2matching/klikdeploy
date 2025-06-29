@@ -126,10 +126,14 @@ class KlikTokenDeployer:
         # Get earned balances
         earned_fees = self.db.get_balance_by_source('fee_detection')
         platform_fees = self.db.get_balance_by_source('pay_per_deploy')
+        dev_protected = self.db.get_balance_by_source('dev_protected')
+        gas_expenses = self.db.get_balance_by_source('gas_expenses')
         
         print(f"💰 Total Balance: {total_balance:.4f} ETH")
         print(f"   • User deposits: {user_deposits:.4f} ETH (protected)")
         print(f"   • Fee detection treasury: {earned_fees:.4f} ETH (funds free deploys)")
+        print(f"   • Gas expenses (free/holder): {gas_expenses:.4f} ETH (spent from treasury)")
+        print(f"   • Dev protected fund: {dev_protected:.4f} ETH (protected)")
         print(f"   • Platform fees: {platform_fees:.4f} ETH (protected)")
         print(f"   • Available for bot: {available_balance:.4f} ETH")
         print(f"   • Available for FREE deploys: {available_for_free:.4f} ETH")
@@ -301,6 +305,7 @@ class KlikTokenDeployer:
         This excludes:
         - User deposits (protected for pay-per-deploy)
         - Platform fees (0.01 ETH per pay-per-deploy - protected)
+        - Dev protected fund (manually moved from treasury - protected)
         
         But INCLUDES fee detection treasury since that's meant to fund free operations
         """
@@ -309,9 +314,10 @@ class KlikTokenDeployer:
         # Get truly protected balances only (not treasury, that's for free deployments)
         user_deposits = self.db.get_total_user_deposits()
         deployment_fees = self.db.get_balance_by_source('pay_per_deploy')
+        dev_protected = self.db.get_balance_by_source('dev_protected')
         
-        # Available for free deploys = total - only user deposits and platform fees
-        protected_total = user_deposits + deployment_fees
+        # Available for free deploys = total - user deposits, platform fees, and dev protected
+        protected_total = user_deposits + deployment_fees + dev_protected
         available = total_balance - (protected_total * 1.05)  # 5% buffer
         
         return max(0, available)
@@ -1144,6 +1150,22 @@ Quick & easy deposits!"""
                 # Update cooldown tracking for free deployments
                 if deployment_type == 'free':
                     self.db.update_cooldown_after_deployment(request.username, deployment_type)
+                    
+                    # Track gas cost against treasury
+                    self.db.record_free_deployment_gas_cost(
+                        actual_gas_cost, 
+                        request.tx_hash, 
+                        f"Gas for free deploy: ${request.token_symbol} by @{request.username}"
+                    )
+                elif deployment_type == 'holder':
+                    self.db.update_cooldown_after_deployment(request.username, deployment_type)
+                    
+                    # Track gas cost against treasury (holders don't pay, but bot does)
+                    self.db.record_free_deployment_gas_cost(
+                        actual_gas_cost, 
+                        request.tx_hash, 
+                        f"Gas for holder deploy: ${request.token_symbol} by @{request.username}"
+                    )
                 elif deployment_type == 'pay-per-deploy':
                     # Deduct from balance
                     # Bot owner also pays no fee on their own deployments

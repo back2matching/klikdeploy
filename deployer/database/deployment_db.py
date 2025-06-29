@@ -91,7 +91,7 @@ class DeploymentDatabase:
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS balance_sources (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_type TEXT, -- 'deposit', 'fee_detection', 'pay_per_deploy'
+                    source_type TEXT, -- 'deposit', 'fee_detection', 'pay_per_deploy', 'dev_protected', 'gas_expenses'
                     amount REAL,
                     tx_hash TEXT,
                     description TEXT,
@@ -513,6 +513,24 @@ class DeploymentDatabase:
                 "SELECT COUNT(*) FROM deployments WHERE status = 'success'"
             )
             return cursor.fetchone()[0]
+    
+    def record_free_deployment_gas_cost(self, gas_cost: float, tx_hash: str, description: str):
+        """Record gas cost for free deployment (deduct from treasury, track as expense)"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Deduct from fee detection treasury
+            conn.execute('''
+                INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+                VALUES ('fee_detection', ?, ?, ?)
+            ''', (-gas_cost, tx_hash, f"Gas expense: {description}"))
+            
+            # Track as gas expense for transparency
+            conn.execute('''
+                INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+                VALUES ('gas_expenses', ?, ?, ?)
+            ''', (gas_cost, tx_hash, description))
+            
+            conn.commit()
+            self.logger.info(f"Recorded gas expense: {gas_cost:.4f} ETH for {description}")
     
     def get_daily_deployment_stats(self, username: str, date) -> Tuple[int, int]:
         """Get daily deployment stats for a user

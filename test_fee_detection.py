@@ -1067,6 +1067,260 @@ async def manual_add_treasury_funds():
         import traceback
         traceback.print_exc()
 
+async def move_treasury_to_dev_protected():
+    """Move funds from fee detection treasury to protected dev fund"""
+    print("\n🏦 MOVE TREASURY TO DEV PROTECTED FUND")
+    print("="*50)
+    
+    try:
+        conn = sqlite3.connect('deployments.db')
+        
+        # Get current balances
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_detection'"
+        )
+        treasury_balance = cursor.fetchone()[0]
+        
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'dev_protected'"
+        )
+        dev_protected_balance = cursor.fetchone()[0]
+        
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
+        )
+        platform_fees = cursor.fetchone()[0]
+        
+        # Get current wallet balance
+        current_balance = w3.eth.get_balance(DEPLOYER_ADDRESS)
+        wallet_balance = float(w3.from_wei(current_balance, 'ether'))
+        
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(balance), 0) FROM users"
+        )
+        user_deposits = cursor.fetchone()[0]
+        
+        print(f"💰 Current Fund Breakdown:")
+        print(f"   Fee Detection Treasury: {treasury_balance:.4f} ETH (funds free deploys)")
+        print(f"   Dev Protected Fund: {dev_protected_balance:.4f} ETH (protected)")
+        print(f"   Pay-per-Deploy Fees: {platform_fees:.4f} ETH (protected)")
+        print(f"   Total Dev Protected: {dev_protected_balance + platform_fees:.4f} ETH")
+        print()
+        print(f"   Wallet Balance: {wallet_balance:.4f} ETH")
+        print(f"   User Deposits: {user_deposits:.4f} ETH (protected)")
+        
+        # Calculate available for free deployments
+        protected_total = user_deposits + dev_protected_balance + platform_fees
+        available_for_free = wallet_balance - (protected_total * 1.05)
+        print(f"   Available for FREE deploys: {available_for_free:.4f} ETH")
+        
+        if treasury_balance <= 0:
+            print(f"\n❌ No treasury funds available to move")
+            conn.close()
+            return
+        
+        print(f"\n💡 Purpose:")
+        print(f"   - Move money from treasury → protected dev fund")
+        print(f"   - Treasury funds free deployments")  
+        print(f"   - Dev protected fund is YOUR money (like pay-per-deploy fees)")
+        print(f"   - Protected funds are never used for free deployments")
+        
+        # Ask for amount
+        print(f"\n" + "="*50)
+        amount_str = input(f"Move how much from treasury to dev fund? (max: {treasury_balance:.4f} ETH): ").strip()
+        
+        if not amount_str:
+            print("❌ Cancelled")
+            conn.close()
+            return
+            
+        try:
+            amount = float(amount_str)
+            if amount <= 0:
+                print("❌ Amount must be positive")
+                conn.close()
+                return
+                
+            if amount > treasury_balance:
+                print(f"❌ Cannot move more than treasury balance ({treasury_balance:.4f} ETH)")
+                conn.close()
+                return
+                
+        except ValueError:
+            print("❌ Invalid amount")
+            conn.close()
+            return
+        
+        # Ask for description
+        description = input(f"Description for this {amount} ETH transfer: ").strip()
+        if not description:
+            description = f"Dev fund transfer from treasury"
+            
+        # Generate tracking hashes
+        import hashlib
+        import time
+        transfer_data = f"treasury_to_dev_{amount}_{time.time()}_{description}"
+        transfer_id = "0x" + hashlib.sha256(transfer_data.encode()).hexdigest()[:64]
+        
+        # Show impact
+        new_treasury = treasury_balance - amount
+        new_dev_protected = dev_protected_balance + amount
+        new_total_protected = new_dev_protected + platform_fees
+        new_available_free = wallet_balance - (user_deposits + new_total_protected) * 1.05
+        
+        print(f"\n🔍 TRANSFER PREVIEW:")
+        print(f"   Moving: {amount} ETH")
+        print(f"   From: Fee Detection Treasury")
+        print(f"   To: Dev Protected Fund")
+        print(f"   Description: {description}")
+        print()
+        print(f"📊 After Transfer:")
+        print(f"   Treasury: {treasury_balance:.4f} → {new_treasury:.4f} ETH")
+        print(f"   Dev Protected: {dev_protected_balance:.4f} → {new_dev_protected:.4f} ETH")
+        print(f"   Available for FREE: {available_for_free:.4f} → {new_available_free:.4f} ETH")
+        print()
+        print(f"💡 Impact: Less treasury = fewer free deployments, more protected dev funds")
+        
+        confirm = input(f"\n✅ Execute transfer? (yes/no): ").lower()
+        
+        if confirm != 'yes':
+            print("❌ Cancelled")
+            conn.close()
+            return
+        
+        # Execute the transfer (as two database entries)
+        # 1. Subtract from treasury
+        conn.execute('''
+            INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+            VALUES ('fee_detection', ?, ?, ?)
+        ''', (-amount, transfer_id, f"Transfer to dev fund: {description}"))
+        
+        # 2. Add to dev protected
+        conn.execute('''
+            INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+            VALUES ('dev_protected', ?, ?, ?)
+        ''', (amount, transfer_id, f"From treasury: {description}"))
+        
+        conn.commit()
+        conn.close()
+        
+        print(f"\n✅ TRANSFER COMPLETE!")
+        print(f"   Moved {amount} ETH from treasury to dev protected fund")
+        print(f"   New treasury: {new_treasury:.4f} ETH (funds free deploys)")
+        print(f"   New dev protected: {new_dev_protected:.4f} ETH (your money)")
+        print(f"   Total protected dev funds: {new_total_protected:.4f} ETH")
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+async def reconcile_gas_expenses():
+    """Reconcile past gas expenses to fix treasury accounting"""
+    print("\n🔧 RECONCILE GAS EXPENSES")
+    print("="*50)
+    
+    try:
+        conn = sqlite3.connect('deployments.db')
+        
+        # Get current balances
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'fee_detection'"
+        )
+        treasury_balance = cursor.fetchone()[0]
+        
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'gas_expenses'"
+        )
+        gas_expenses = cursor.fetchone()[0]
+        
+        # Get current wallet balance
+        current_balance = w3.eth.get_balance(DEPLOYER_ADDRESS)
+        wallet_balance = float(w3.from_wei(current_balance, 'ether'))
+        
+        # Get protected balances
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(balance), 0) FROM users"
+        )
+        user_deposits = cursor.fetchone()[0]
+        
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'dev_protected'"
+        )
+        dev_protected = cursor.fetchone()[0]
+        
+        cursor = conn.execute(
+            "SELECT COALESCE(SUM(amount), 0) FROM balance_sources WHERE source_type = 'pay_per_deploy'"
+        )
+        platform_fees = cursor.fetchone()[0]
+        
+        print(f"💰 Current Status:")
+        print(f"   Wallet Balance: {wallet_balance:.4f} ETH")
+        print(f"   Treasury (recorded): {treasury_balance:.4f} ETH")
+        print(f"   Gas Expenses (recorded): {gas_expenses:.4f} ETH")
+        print(f"   User Deposits: {user_deposits:.4f} ETH")
+        print(f"   Dev Protected: {dev_protected:.4f} ETH") 
+        print(f"   Platform Fees: {platform_fees:.4f} ETH")
+        
+        # Calculate discrepancy
+        total_protected = user_deposits + dev_protected + platform_fees
+        treasury_available = wallet_balance - total_protected
+        treasury_discrepancy = treasury_balance - treasury_available
+        
+        print(f"\n📊 Analysis:")
+        print(f"   Protected funds total: {total_protected:.4f} ETH")
+        print(f"   Treasury should be: {treasury_available:.4f} ETH")
+        print(f"   Treasury recorded: {treasury_balance:.4f} ETH") 
+        print(f"   Discrepancy: {treasury_discrepancy:.4f} ETH")
+        
+        if abs(treasury_discrepancy) < 0.001:
+            print(f"\n✅ Treasury is already reconciled!")
+            conn.close()
+            return
+            
+        if treasury_discrepancy > 0:
+            print(f"\n💡 This discrepancy is likely untracked gas expenses")
+            print(f"   from past free/holder deployments")
+            
+            confirm = input(f"\n🔧 Record {treasury_discrepancy:.4f} ETH as past gas expenses? (yes/no): ").lower()
+            
+            if confirm == 'yes':
+                # Generate tracking hash for reconciliation
+                import hashlib
+                import time
+                reconcile_data = f"gas_reconciliation_{treasury_discrepancy}_{time.time()}"
+                reconcile_hash = "0x" + hashlib.sha256(reconcile_data.encode()).hexdigest()[:64]
+                
+                # Record the gas expense (deduct from treasury, track as expense)
+                conn.execute('''
+                    INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+                    VALUES ('fee_detection', ?, ?, ?)
+                ''', (-treasury_discrepancy, reconcile_hash, "Reconciliation: Past gas expenses"))
+                
+                conn.execute('''
+                    INSERT INTO balance_sources (source_type, amount, tx_hash, description)
+                    VALUES ('gas_expenses', ?, ?, ?)
+                ''', (treasury_discrepancy, reconcile_hash, "Reconciliation: Past free/holder deployment gas costs"))
+                
+                conn.commit()
+                
+                print(f"\n✅ RECONCILIATION COMPLETE!")
+                print(f"   Recorded {treasury_discrepancy:.4f} ETH as past gas expenses")
+                print(f"   Treasury now matches available balance")
+                print(f"   Gas expense tracking will be accurate going forward")
+            else:
+                print(f"\n❌ Reconciliation cancelled")
+        else:
+            print(f"\n⚠️  Treasury is somehow higher than it should be")
+            print(f"   This needs manual investigation")
+        
+        conn.close()
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+
 if __name__ == "__main__":
     while True:
         print("\n" + "="*50)
@@ -1084,9 +1338,11 @@ if __name__ == "__main__":
         print("9. Test DOK price from V3 pool")
         print("10. Test finding DOK pool on Uniswap V3")
         print("11. 💰 Add treasury funds for free deployments")
-        print("12. Exit")
+        print("12. 🏦 Move treasury to dev protected fund")
+        print("13. 🔧 Reconcile gas expenses (fix accounting)")
+        print("14. Exit")
         
-        choice = input("\nEnter choice (1-12): ")
+        choice = input("\nEnter choice (1-14): ")
         
         if choice == "1":
             asyncio.run(detect_incoming_fee_claims())
@@ -1111,11 +1367,15 @@ if __name__ == "__main__":
         elif choice == "11":
             asyncio.run(manual_add_treasury_funds())
         elif choice == "12":
+            asyncio.run(move_treasury_to_dev_protected())
+        elif choice == "13":
+            asyncio.run(reconcile_gas_expenses())
+        elif choice == "14":
             print("\n👋 Goodbye!")
             break
         else:
             print("\n❌ Invalid choice! Please try again.")
         
         # Small pause before showing menu again
-        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"]:
+        if choice in ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]:
             input("\n📌 Press Enter to return to menu...") 
