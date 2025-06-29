@@ -109,10 +109,17 @@ class DeploymentDatabase:
                     cooldown_until TIMESTAMP,
                     consecutive_days INTEGER DEFAULT 0,
                     total_free_deploys INTEGER DEFAULT 0,
+                    spam_attempts INTEGER DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            
+            # Add spam_attempts column if it doesn't exist (for existing databases)
+            try:
+                conn.execute('ALTER TABLE deployment_cooldowns ADD COLUMN spam_attempts INTEGER DEFAULT 0')
+            except sqlite3.OperationalError:
+                pass  # Column already exists
             
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_username_date 
@@ -267,7 +274,7 @@ class DeploymentDatabase:
         with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
             # Get or create cooldown record
             cursor = conn.execute('''
-                SELECT free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys
+                SELECT free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys, spam_attempts
                 FROM deployment_cooldowns 
                 WHERE LOWER(username) = LOWER(?)
             ''', (username,))
@@ -277,28 +284,43 @@ class DeploymentDatabase:
             if not cooldown_data:
                 # First time user
                 conn.execute('''
-                    INSERT INTO deployment_cooldowns (username, free_deploys_7d, last_free_deploy, updated_at)
-                    VALUES (?, 0, ?, ?)
+                    INSERT INTO deployment_cooldowns (username, free_deploys_7d, last_free_deploy, spam_attempts, updated_at)
+                    VALUES (?, 0, ?, 0, ?)
                 ''', (username.lower(), now, now))
                 return True, "First deployment allowed", 0
             
-            free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys = cooldown_data
+            free_deploys_7d, last_free_deploy, cooldown_until, consecutive_days, total_free_deploys, spam_attempts = cooldown_data
             
             # Check if currently in cooldown
             if cooldown_until and cooldown_until > now:
                 days_left = (cooldown_until - now).days + 1
                 
-                # ESCALATION: Attempting to deploy during cooldown = escalate to 30-day
-                if days_left < 30:  # If current cooldown is less than 30 days, escalate it
+                # NEW ESCALATION SYSTEM: Track spam attempts and escalate at 10
+                spam_attempts += 1
+                
+                if spam_attempts >= 10:
+                    # 10th spam attempt = 30-day ban
                     escalated_end = now + timedelta(days=30)
                     conn.execute('''
                         UPDATE deployment_cooldowns 
-                        SET cooldown_until = ?, updated_at = ?
+                        SET cooldown_until = ?, spam_attempts = ?, updated_at = ?
                         WHERE LOWER(username) = LOWER(?)
-                    ''', (escalated_end, now, username))
-                    return False, f"Cooldown violation: Escalated to 30-day ban for attempting deploy during cooldown", 30
-                
-                return False, f"Progressive cooldown active. {days_left} days remaining", days_left
+                    ''', (escalated_end, spam_attempts, now, username))
+                    return False, f"SPAM BAN: 10 attempts during cooldown. 30-day ban applied", 30
+                else:
+                    # Update spam attempt count and show warning
+                    conn.execute('''
+                        UPDATE deployment_cooldowns 
+                        SET spam_attempts = ?, updated_at = ?
+                        WHERE LOWER(username) = LOWER(?)
+                    ''', (spam_attempts, now, username))
+                    
+                    # Show escalating warnings
+                    attempts_left = 10 - spam_attempts
+                    reset_date = cooldown_until.strftime('%m/%d')
+                    ban_date = (now + timedelta(days=30)).strftime('%m/%d')
+                    
+                    return False, f"Weekly limit reached ({spam_attempts}/10 spam attempts). Next reset: {reset_date}. {attempts_left} more attempts = 30-day ban until {ban_date}", days_left
             
             # Count free deployments in last 7 days (more accurate)
             cursor = conn.execute('''
@@ -361,27 +383,48 @@ class DeploymentDatabase:
             # Debug logging
             self.logger.info(f"@{username} deployment check: {deploys_today} today, {actual_free_deploys_7d} this week")
             
-            # SERIOUS SPAM: 5+ attempts in ONE DAY = immediate 30-day ban
+            # SERIOUS SPAM: 5+ attempts in ONE DAY = immediate 30-day ban  
             if deploys_today >= 5:  # Already did 5+ today = serious spam
                 # Apply 30-day ban for serious spam
                 cooldown_end = now + timedelta(days=30)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    SET cooldown_until = ?, spam_attempts = 0, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
                 return False, "SPAM BAN: 5+ attempts in 24 hours. 30-day ban applied", 30
             
-            # Weekly limit check: 4th deployment attempt gets 7-day cooldown
+            # Weekly limit check: 4th deployment attempt gets 7-day cooldown + show deployments
             elif free_deploys_7d >= 3:  # Already did 3 this week, trying for 4th
                 # Apply 7-day cooldown for exceeding weekly allowance
                 cooldown_end = now + timedelta(days=7)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    SET cooldown_until = ?, spam_attempts = 0, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Weekly limit: Used all 3 free deploys. 7-day cooldown applied", 7
+                
+                # Get their deployments to show in the message
+                cursor = conn.execute('''
+                    SELECT token_symbol, token_address 
+                    FROM deployments 
+                    WHERE LOWER(username) = LOWER(?) 
+                    AND requested_at > ? 
+                    AND status = 'success' 
+                    AND token_address IS NOT NULL
+                    ORDER BY deployed_at DESC 
+                    LIMIT 3
+                ''', (username, seven_days_ago))
+                
+                recent_deployments = cursor.fetchall()
+                if recent_deployments:
+                    deploy_list = []
+                    for symbol, address in recent_deployments:
+                        deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                    deployments_text = "\n".join(deploy_list)
+                    return False, f"Weekly limit reached! (3/3 used)\n\n{deployments_text}\n\nWait 7 days OR deposit: t.me/DeployOnKlik", 7
+                else:
+                    return False, "Weekly limit: Used all 3 free deploys. 7-day cooldown applied", 7
             
             # Update last deployment time
             conn.execute('''

@@ -2154,14 +2154,45 @@ Please try again in a few minutes ⏳
 Status: t.me/DeployOnKlik"""
             elif "COOLDOWN" in instructions or "BAN" in instructions:
                 # Handle new progressive cooldown messages
-                if "SPAM BAN" in instructions:
-                    # User tried 5+ deploys in one day - serious spam
-                    reply_text = f"""@{username} SPAM BAN! 🚫
+                if "SPAM BAN" in instructions or "SPAM COOLDOWN" in instructions or "30-DAY TIMEOUT" in instructions:
+                    # User tried 5+ deploys in one day OR 4+ in one day - serious spam
+                    # Get their recent deployments to show what caused the ban
+                    recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
+                    
+                    if recent_deploys and len(recent_deploys) >= 3:
+                        # Show the deployments that caused the spam ban
+                        deploys_to_show = recent_deploys[:4]  # Show up to 4 for spam cases
+                        
+                        deploy_lines = []
+                        for symbol, address, _ in deploys_to_show:
+                            if address:
+                                deploy_lines.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                            else:
+                                deploy_lines.append(f"${symbol} (no address)")
+                        
+                        deploy_text = "\n".join(deploy_lines)
+                        
+                        if "4+ deployments in ONE DAY" in instructions:
+                            reply_text = f"""@{username} SPAM BAN: 4+ deploys in 24h! 🚫
 
-5+ attempts in 24 hours is serious abuse.
+{deploy_text}
+
+30-day cooldown. Learn limits: t.me/DeployOnKlik"""
+                        else:
+                            reply_text = f"""@{username} SPAM BAN: Too many attempts! 🚫
+
+{deploy_text}
+
+30-day cooldown. Learn limits: t.me/DeployOnKlik"""
+                    else:
+                        # Fallback if no deployments found
+                        reply_text = f"""@{username} SPAM BAN! 🚫
+
+Too many deployment attempts.
 30-day ban applied.
 
 Learn the rules: t.me/DeployOnKlik"""
+                        
                 elif "Cooldown violation" in instructions:
                     # User tried to deploy while in cooldown - escalated
                     reply_text = f"""@{username} Cooldown violation! ⚠️
@@ -2171,39 +2202,54 @@ Escalated to 30-day ban.
 
 Follow the rules: t.me/DeployOnKlik"""
                 elif "Weekly limit" in instructions:
-                    # User has used all 3 free deploys this week
-                    cooldown_match = re.search(r'Next free deploy: (\d+) days', instructions)
-                    days = cooldown_match.group(1) if cooldown_match else "7"
-                    
-                    # Get their recent deployments to show WITH ADDRESSES
-                    recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
-                    
-                    if recent_deploys:
-                        # Show actual deployments (may be less than 3 if some failed or were deleted)
-                        actual_count = len(recent_deploys)
-                        deploys_to_show = recent_deploys[:3]  # Show up to 3
+                    # Check if this is the initial weekly limit (includes deployments) or spam escalation
+                    if "Weekly limit reached! (3/3 used)" in instructions and "\n\n$" in instructions:
+                        # Database already formatted the message with deployments - use it directly!
+                        # Extract the deployments section from the database message
+                        lines = instructions.split('\n')
+                        deploy_section = []
+                        collecting_deploys = False
                         
-                        # ALWAYS show full DexScreener links with ticker
-                        deploy_lines = []
-                        for symbol, address, _ in deploys_to_show:
-                            if address:
-                                deploy_lines.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
-                            else:
-                                deploy_lines.append(f"${symbol} (no address)")
+                        for line in lines:
+                            if line.startswith('$') and 'https://dexscreener.com' in line:
+                                deploy_section.append(line)
+                                collecting_deploys = True
+                            elif collecting_deploys and line.strip() == "":
+                                break
                         
-                        deploy_text = "\n".join(deploy_lines)
-                        reply_text = f"""@{username} Used all 3 free deploys this week! 
+                        if deploy_section:
+                            deploy_text = "\n".join(deploy_section)
+                            reply_text = f"""@{username} Weekly limit reached! (3/3 used)
 
 {deploy_text}
 
-7-day cooldown. Deposit to deploy: t.me/DeployOnKlik"""
-                    else:
-                        # No deployments found but hit limit (shouldn't happen)
-                        reply_text = f"""@{username} Used all 3 free deploys this week!
+Wait 7 days OR deposit: t.me/DeployOnKlik"""
+                        else:
+                            # Fallback if parsing fails
+                            reply_text = f"""@{username} Weekly limit reached! (3/3 used)
 
-7-day cooldown applied.
-💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Hold 5M+ $DOK for 10/week"""
+Wait 7 days OR deposit: t.me/DeployOnKlik"""
+                    
+                    elif "spam attempts" in instructions and "more attempts = 30-day ban" in instructions:
+                        # This is a spam escalation warning - extract the key info
+                        spam_match = re.search(r'(\d+)/10 spam attempts', instructions)
+                        reset_match = re.search(r'Next reset: (\d+/\d+)', instructions)
+                        attempts_match = re.search(r'(\d+) more attempts = 30-day ban until (\d+/\d+)', instructions)
+                        
+                        spam_count = spam_match.group(1) if spam_match else "?"
+                        reset_date = reset_match.group(1) if reset_match else "?"
+                        attempts_left = attempts_match.group(1) if attempts_match else "?"
+                        ban_date = attempts_match.group(2) if attempts_match else "?"
+                        
+                        reply_text = f"""@{username} Weekly limit exceeded! ({spam_count}/10 warnings)
+
+Reset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})
+Stop spamming or deposit: t.me/DeployOnKlik"""
+                    else:
+                        # Generic weekly limit (shouldn't happen with new system)
+                        reply_text = f"""@{username} Weekly limit reached!
+
+Wait 7 days OR deposit: t.me/DeployOnKlik"""
                 else:
                     # Generic cooldown message
                     reply_text = f"""@{username} Cooldown active! (3 free/week limit)
