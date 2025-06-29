@@ -301,9 +301,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     gas_gwei = float(w3.from_wei(gas_price, 'gwei'))
     
     # Determine what's available for this user
-    if gas_gwei <= 3:
+    if gas_gwei <= 2:
         current_tier = "FREE TIER"
-        tier_desc = "1 free deploy available today"
+        tier_desc = "3 free deploys/week available"
     else:
         current_tier = "PAY PER DEPLOY"
         tier_desc = f"Deposit ETH to deploy"
@@ -337,14 +337,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "**Deployment Tiers**\n"
             "══════════════════════\n"
             "**🆓 FREE TIER**\n"
-            "• 1 deployment per day\n"
-            "• Gas ≤ 3 gwei\n"
-            "• **Requires 1500+ Twitter followers**\n"
+            "• 3 deployments per week\n"
+            "• Gas ≤ 2 gwei\n"
+            "• **Requires 250+ Twitter followers**\n"
             "• VIP: 20k+ followers (gas ≤ 6 gwei)\n"
             "• Bot pays all gas fees\n\n"
             
-            "**🎯 HOLDER TIER** (Gas ≤ 15 gwei)\n"
-            "• 2 FREE deployments daily\n"
+            "**🎯 HOLDER TIER** (Gas ≤ 10 gwei)\n"
+            "• 10 FREE deployments weekly\n"
             "• Hold 0.5%+ of $DOK supply (5M+ DOK)\n"
             "• **Must deposit once to verify wallet**\n"
             "• Bot pays gas (NO FEES!)\n\n"
@@ -385,7 +385,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "**With wallet:** Access all deployment tiers\n\n"
             
             "• Deposit ETH for paid deployments\n"
-            "• Deploy when gas is above 3 gwei\n"
+            "• Deploy when gas is above 2 gwei\n"
             "• Track your deployment history\n"
             "• Withdraw balance anytime\n\n"
             
@@ -457,9 +457,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status_text = f"$DOK HOLDER ({dok_balance:,.0f} DOK)"
             else:
                 status_text = "$DOK HOLDER"
-            daily_limit = f"{holder_used}/2 holder deploys used"  # Changed from 5 to 2
+            daily_limit = f"{holder_used}/10 holder deploys used this week"
             fee_text = "NO FEES!"
-            if holder_used < 2:  # Changed from 5 to 2
+            if holder_used < 10:
                 active_mode = "HOLDER TIER"
             else:
                 active_mode = "PAY PER DEPLOY"
@@ -467,11 +467,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_emoji = "👤"
             status_text = "Regular User"
             fee_text = "0.01 ETH fee/deploy"
-            if gas_gwei <= 3 and free_used < 1:
-                daily_limit = f"{free_used}/1 free deploy used"
+            if gas_gwei <= 2 and free_used < 3:
+                daily_limit = f"{free_used}/3 free deploys used this week"
                 active_mode = "FREE TIER"
             else:
-                daily_limit = f"{free_used}/1 free deploy used" if gas_gwei <= 3 else "Pay per deploy active"
+                daily_limit = f"{free_used}/3 free deploys used this week" if gas_gwei <= 2 else "Pay per deploy active"
                 active_mode = "PAY PER DEPLOY"
         
         # Check verification status first
@@ -512,21 +512,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Add deployment instructions based on current conditions
         message += "══════════════════════\n"
-        if gas_gwei <= 3 and free_used < 1:
+        if gas_gwei <= 2 and free_used < 3:
             message += "**FREE Deployment Requirements:**\n"
-            message += "• Gas ≤ 3 gwei ✅\n"
-            message += "• 1500+ Twitter followers\n"
-            message += "• 1 per day (unused) ✅\n\n"
+            message += "• Gas ≤ 2 gwei ✅\n"
+            message += "• 250+ Twitter followers\n"
+            message += "• 3 per week (unused) ✅\n\n"
             message += "Tweet: `@DeployOnKlik $TICKER`\n"
-        elif is_holder and holder_used < 2:  # Changed from 5 to 2
-            message += f"✅ **{2-holder_used} holder deploys left today!**\nTweet now: `@DeployOnKlik $TICKER - Token Name`\n"
+        elif is_holder and holder_used < 10:  # Changed from 5 to 10
+            message += f"✅ **{10-holder_used} holder deploys left this week!**\nTweet now: `@DeployOnKlik $TICKER - Token Name`\n"
         elif balance >= deploy_total:
             message += f"✅ **Ready to deploy!** ({int(balance/deploy_total)} deploys available)\nTweet now: `@DeployOnKlik $TICKER - Token Name`\n"
         else:
             needed = deploy_total - balance
             message += f"❌ **Low balance!** Need **{needed:.4f}** more ETH\n"
-            if gas_gwei > 3:
-                message += f"\n**FREE tier requires gas ≤ 3 gwei**\n"
+            if gas_gwei > 2:
+                message += f"\n**FREE tier requires gas ≤ 2 gwei**\n"
                 message += f"Current gas: {gas_gwei:.1f} gwei\n"
         
         message += "══════════════════════\n"
@@ -688,13 +688,17 @@ async def show_gas_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**Deployment Cost Estimates:**\n"
         f"*(6.5M gas + 0.01 ETH fee)*\n\n"
         f"**1 gwei:** ~{1 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
-        f"**3 gwei:** ~{3 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
-        f"**5 gwei:** ~{5 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
-        f"**10 gwei:** ~{10 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
+        f"**2 gwei:** ~{2 * deploy_gas_units / 1e9 + 0.01:.4f} ETH ← Free tier limit\n"
+        f"**6 gwei:** ~{6 * deploy_gas_units / 1e9 + 0.01:.4f} ETH ← VIP tier limit\n"
+        f"**10 gwei:** ~{10 * deploy_gas_units / 1e9 + 0.01:.4f} ETH ← Holder tier limit\n"
         f"**15 gwei:** ~{15 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**20 gwei:** ~{20 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**30 gwei:** ~{30 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n"
         f"**50 gwei:** ~{50 * deploy_gas_units / 1e9 + 0.01:.4f} ETH\n\n"
+        f"**Tier Limits:**\n"
+        f"• Free: ≤2 gwei (250+ followers, 3/week)\n"
+        f"• VIP: ≤6 gwei (20k+ followers, 3/week)\n" 
+        f"• Holder: ≤10 gwei (5M+ $DOK, 10/week)\n\n"
         f"**Note:** Holders pay gas only (no 0.01 fee)\n\n"
         f"*Updates every 12 seconds*"
     )
