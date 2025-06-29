@@ -94,9 +94,17 @@ async def safe_edit_message(query, message: str, reply_markup=None, parse_mode='
             except telegram.error.BadRequest:
                 # If even plain text fails, just acknowledge the button press
                 await query.answer("Message updated")
+                
+        elif "Message to edit not found" in error_str or "Message can't be edited" in error_str:
+            # Message was deleted by user or expired - just acknowledge
+            logger.warning(f"Message no longer exists, cannot edit: {e}")
+            await query.answer("Message no longer available")
+            
         else:
             # Re-raise other errors
-            raise
+            logger.error(f"Unhandled Telegram error in safe_edit_message: {e}")
+            await query.answer("Error occurred")
+            # Don't re-raise to prevent crashes
 
 async def safe_send_message(update, message: str, reply_markup=None, parse_mode='Markdown'):
     """Safely send a message with fallback for parsing errors"""
@@ -151,9 +159,17 @@ async def safe_send_message(update, message: str, reply_markup=None, parse_mode=
                 await update.callback_query.answer("Already up to date")
             # For regular messages, we don't need to do anything
             
+        elif "Message to edit not found" in error_str or "Message can't be edited" in error_str:
+            # Message was deleted by user or expired
+            logger.warning(f"Message no longer exists in safe_send_message: {e}")
+            if update.callback_query:
+                await update.callback_query.answer("Message no longer available")
+            
         else:
-            # Re-raise other errors
-            raise
+            # Don't re-raise to prevent crashes - just log
+            logger.error(f"Unhandled Telegram error in safe_send_message: {e}")
+            if update.callback_query:
+                await update.callback_query.answer("Error occurred")
 
 # Initialize database (using same one as Twitter bot)
 def init_db():
