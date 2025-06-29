@@ -168,7 +168,10 @@ class DeploymentDatabase:
             except sqlite3.OperationalError:
                 pass  # Column already exists
         
-        self.logger.info("Database initialized with user accounts")
+        # Only log once to avoid spam in logs
+        if not hasattr(self, '_init_logged'):
+            self.logger.info("Database initialized with user accounts")
+            self._init_logged = True
     
     def save_deployment(self, request) -> None:
         """Save deployment request to database"""
@@ -486,13 +489,13 @@ class DeploymentDatabase:
                     ''', (cooldown_end, consecutive_days, now, username))
                     
                     # Get their deployments to show in the message
+                    # FIXED: Use same criteria as counting query for consistency
                     cursor = conn.execute('''
-                        SELECT token_symbol, token_address 
+                        SELECT token_symbol, token_address, deployed_at
                         FROM deployments 
                         WHERE LOWER(username) = LOWER(?) 
                         AND requested_at > ? 
-                        AND status = 'success' 
-                        AND token_address IS NOT NULL
+                        AND status = 'success'
                         ORDER BY deployed_at DESC 
                         LIMIT 3
                     ''', (username, seven_days_ago))
@@ -500,10 +503,19 @@ class DeploymentDatabase:
                     recent_deployments = cursor.fetchall()
                     if recent_deployments:
                         deploy_list = []
-                        for symbol, address in recent_deployments:
-                            deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                        deployments_with_address = 0
+                        for symbol, address, deployed_at in recent_deployments:
+                            if address:
+                                deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                                deployments_with_address += 1
+                            else:
+                                # Show deployment even without address (failed extraction)
+                                deploy_date = deployed_at.strftime('%m/%d') if deployed_at else 'recent'
+                                deploy_list.append(f"${symbol}: deployed {deploy_date} (address extraction failed)")
+                        
                         deployments_text = "\n".join(deploy_list)
-                        return False, f"Weekly limit reached! (3/3 used)\n\n{deployments_text}\n\nWait 7 days OR deposit: t.me/DeployOnKlik", 7
+                        # Show actual count from database
+                        return False, f"Weekly limit reached! ({actual_free_deploys_7d}/3 used)\n\n{deployments_text}\n\nWait 7 days OR deposit: t.me/DeployOnKlik", 7
                     else:
                         return False, "Weekly limit: Used all 3 free deploys. 7-day cooldown applied", 7
                 
@@ -776,6 +788,24 @@ class DeploymentDatabase:
             ''', (username, since))
             
             return cursor.fetchall()
+    
+    def get_weekly_deployment_count(self, username: str) -> int:
+        """Get user's total successful deployment count in last 7 days
+        
+        Returns:
+            Number of successful deployments (same logic as cooldown check)
+        """
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        
+        with sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES) as conn:
+            cursor = conn.execute('''
+                SELECT COUNT(*) FROM deployments 
+                WHERE LOWER(username) = LOWER(?) 
+                AND requested_at > ? 
+                AND status = 'success'
+            ''', (username, seven_days_ago))
+            
+            return cursor.fetchone()[0]
     
     def cleanup_expired_cooldowns(self) -> int:
         """Clean up expired cooldowns and fix any incorrect cooldown periods

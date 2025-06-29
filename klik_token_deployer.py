@@ -1575,20 +1575,27 @@ You sent: Missing $"""
                 # 1. Used very explicit deployment keywords
                 # 2. The tweet is more than just a few words
                 
-                # More strict keywords - must be very clear deployment intent
-                explicit_keywords = [
-                    'deploy', 'launch', 'create token', 'make token', 
-                    'ticker:', 'symbol:', 'token name:', 
+                # MUCH more restrictive - only respond to clear deployment commands
+                explicit_deploy_commands = [
+                    'deploy ', ' deploy', 'create token', 'make token',
                     'deploy my', 'launch my', 'create my'
                 ]
-                has_explicit_keyword = any(keyword in cleaned_text for keyword in explicit_keywords)
                 
-                # Check if tweet has substance (not just "alpha" or "gm")
-                word_count = len(cleaned_text.split())
-                has_substance = word_count >= 3  # At least 3 words after removing mention
+                # Question indicators that mean this is NOT a deployment attempt
+                question_indicators = [
+                    'when', 'why', 'how', 'what', 'where', 'is there', 'can you', 
+                    'will you', 'do you', 'does', 'thoughts', 'think about',
+                    'eta', 'estimate', '?', 'help', 'explain', 'furthermore'
+                ]
                 
-                # Only send format help if VERY clear they're trying to deploy
-                if has_explicit_keyword and has_substance:
+                # Check if it's clearly a question or conversation
+                is_question_or_conversation = any(indicator in cleaned_text for indicator in question_indicators)
+                
+                # Only look for VERY explicit deployment commands
+                has_deploy_command = any(command in cleaned_text for command in explicit_deploy_commands)
+                
+                # Must have explicit deployment command AND not be a question/conversation
+                if has_deploy_command and not is_question_or_conversation:
                     error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name"
                     
                     # Send Twitter reply to help the user
@@ -2384,7 +2391,10 @@ Wait 7 days OR deposit: t.me/DeployOnKlik"""
                     # This catches cases where the database message format doesn't match above patterns
                     recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
                     
-                    if recent_deploys and len(recent_deploys) >= 3:
+                    # Count actual deployments in last 7 days for accurate display
+                    actual_deploy_count = self.db.get_weekly_deployment_count(username)
+                    
+                    if recent_deploys and actual_deploy_count >= 3:
                         # User has 3+ deployments this week - show them with proper limit message
                         deploy_lines = []
                         for symbol, address, _ in recent_deploys[:3]:  # Show up to 3
@@ -2394,7 +2404,7 @@ Wait 7 days OR deposit: t.me/DeployOnKlik"""
                                 deploy_lines.append(f"${symbol} (no address)")
                         
                         deploy_text = "\n".join(deploy_lines)
-                        reply_text = f"""@{username} Weekly limit reached! (3/3 used)
+                        reply_text = f"""@{username} Weekly limit reached! ({actual_deploy_count}/3 used)
 
 {deploy_text}
 
@@ -2439,10 +2449,11 @@ Or deposit ETH: t.me/DeployOnKlik"""
             elif "already used your free deployment" in instructions or "already deployed" in instructions:
                 # Get user's recent deployments to show what they've deployed
                 recent_deploys = self.db.get_recent_deployments_with_addresses(username, days=7)
+                actual_deploy_count = self.db.get_weekly_deployment_count(username)
                 
                 if recent_deploys:
                     # Show their recent deployments with full DexScreener links
-                    if len(recent_deploys) == 1:
+                    if len(recent_deploys) == 1 and actual_deploy_count == 1:
                         # Single deployment - show full DexScreener link
                         symbol, address, _ = recent_deploys[0]
                         reply_text = f"""@{username} You already deployed ${symbol}!
@@ -2454,7 +2465,6 @@ Want more? (3 free/week limit)
 🎯 Hold $DOK for 10/week"""
                     else:
                         # Multiple deployments - show full DexScreener links with ticker
-                        deploy_count = len(recent_deploys[:3])
                         deploy_lines = []
                         for symbol, address, _ in recent_deploys[:3]:
                             if address:
@@ -2463,7 +2473,7 @@ Want more? (3 free/week limit)
                                 deploy_lines.append(f"${symbol} (no address)")
                         
                         deploy_text = "\n".join(deploy_lines)
-                        reply_text = f"""@{username} Already deployed {deploy_count} this week!
+                        reply_text = f"""@{username} Already deployed {actual_deploy_count} this week!
 
 {deploy_text}
 

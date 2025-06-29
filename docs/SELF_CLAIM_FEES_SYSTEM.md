@@ -7,14 +7,12 @@ The Self-Claim Fees system allows verified users to capture 50% of fees from the
 ## How It Works
 
 ### Current Fee Distribution (Default)
-- **25%** → Source token buyback (pumps the token chart)
-- **25%** → $DOK buyback (pumps $DOK chart) 
-- **50%** → Community treasury (funds free deployments)
+- **50%** → Source token buyback (pumps the token chart)
+- **50%** → $DOK buyback (pumps $DOK chart)
 
 ### Self-Claim Mode (Verified Users Only)
-- **25%** → Source token buyback (pumps the token chart)
-- **25%** → $DOK buyback (pumps $DOK chart)
 - **50%** → User claimable fees (stored in database)
+- **50%** → $DOK buyback (pumps $DOK chart)
 
 ## System Components
 

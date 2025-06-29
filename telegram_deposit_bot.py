@@ -2343,15 +2343,13 @@ async def show_fee_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"**How It Works:**\n"
         f"══════════════════════\n"
         f"**🌍 Community Split:**\n"
-        f"• 25% → Source token buyback (pump chart)\n"
-        f"• 25% → $DOK buyback (pump chart)\n"
-        f"• 50% → Platform treasury\n"
+        f"• 50% → Source token buyback (pump chart)\n"
+        f"• 50% → $DOK buyback (pump chart)\n"
         f"• **You get:** Chart pumps for your tokens\n\n"
         f"**💰 Self-Claim:**\n"
-        f"• 25% → Source token buyback (pump chart)\n"
-        f"• 25% → $DOK buyback (pump chart)\n"
         f"• 50% → **Your wallet** (claimable)\n"
-        f"• **You get:** ETH + chart pumps\n\n"
+        f"• 50% → $DOK buyback (pump chart)\n"
+        f"• **You get:** ETH + $DOK chart pumps\n\n"
         f"**Note:** Only verified accounts can self-claim"
     )
     
@@ -2408,9 +2406,8 @@ async def toggle_fee_capture(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 f"**🌍 Community Split Active**\n"
                 f"══════════════════════\n"
                 f"Your fees will fund community buybacks:\n"
-                f"• 25% → Your token buybacks (pump)\n"
-                f"• 25% → $DOK buybacks (pump)\n"
-                f"• 50% → Platform development\n\n"
+                f"• 50% → Your token buybacks (pump)\n"
+                f"• 50% → $DOK buybacks (pump)\n\n"
                 f"This helps pump all community tokens!"
             )
         
