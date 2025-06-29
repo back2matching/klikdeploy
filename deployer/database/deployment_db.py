@@ -287,6 +287,17 @@ class DeploymentDatabase:
             # Check if currently in cooldown
             if cooldown_until and cooldown_until > now:
                 days_left = (cooldown_until - now).days + 1
+                
+                # ESCALATION: Attempting to deploy during cooldown = escalate to 30-day
+                if days_left < 30:  # If current cooldown is less than 30 days, escalate it
+                    escalated_end = now + timedelta(days=30)
+                    conn.execute('''
+                        UPDATE deployment_cooldowns 
+                        SET cooldown_until = ?, updated_at = ?
+                        WHERE LOWER(username) = LOWER(?)
+                    ''', (escalated_end, now, username))
+                    return False, f"Cooldown violation: Escalated to 30-day ban for attempting deploy during cooldown", 30
+                
                 return False, f"Progressive cooldown active. {days_left} days remaining", days_left
             
             # Count free deployments in last 7 days (more accurate)
@@ -350,27 +361,27 @@ class DeploymentDatabase:
             # Debug logging
             self.logger.info(f"@{username} deployment check: {deploys_today} today, {actual_free_deploys_7d} this week")
             
-            # ANTI-SPAM: 4+ deploys in ONE DAY = spam = 5 day cooldown
-            if deploys_today >= 3:  # Already did 3 today, trying for 4th
-                # Apply 5-day cooldown for daily spam
-                cooldown_end = now + timedelta(days=5)
-                conn.execute('''
-                    UPDATE deployment_cooldowns 
-                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
-                    WHERE LOWER(username) = LOWER(?)
-                ''', (cooldown_end, consecutive_days, now, username))
-                return False, "DAILY LIMIT: 3+ deploys in 24 hours. 5-day cooldown applied", 5
-            
-            # Weekly limit check (severe for gaming the system)
-            elif free_deploys_7d >= 4:  # 4+ deploys in 7 days = gaming daily limits
-                # Apply 30-day cooldown for serious abuse
+            # SERIOUS SPAM: 5+ attempts in ONE DAY = immediate 30-day ban
+            if deploys_today >= 5:  # Already did 5+ today = serious spam
+                # Apply 30-day ban for serious spam
                 cooldown_end = now + timedelta(days=30)
                 conn.execute('''
                     UPDATE deployment_cooldowns 
                     SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
                     WHERE LOWER(username) = LOWER(?)
                 ''', (cooldown_end, consecutive_days, now, username))
-                return False, "Weekly limit exceeded (4+ free/week). 30-day cooldown applied", 30
+                return False, "SPAM BAN: 5+ attempts in 24 hours. 30-day ban applied", 30
+            
+            # Weekly limit check: 4th deployment attempt gets 7-day cooldown
+            elif free_deploys_7d >= 3:  # Already did 3 this week, trying for 4th
+                # Apply 7-day cooldown for exceeding weekly allowance
+                cooldown_end = now + timedelta(days=7)
+                conn.execute('''
+                    UPDATE deployment_cooldowns 
+                    SET cooldown_until = ?, consecutive_days = ?, updated_at = ?
+                    WHERE LOWER(username) = LOWER(?)
+                ''', (cooldown_end, consecutive_days, now, username))
+                return False, "Weekly limit: Used all 3 free deploys. 7-day cooldown applied", 7
             
             # Update last deployment time
             conn.execute('''
@@ -380,12 +391,10 @@ class DeploymentDatabase:
             ''', (consecutive_days, now, username))
             
             # More informative message about limits
-            if deploys_today >= 2:
-                return True, f"⚠️ Deployment allowed (2/3 today - ONE MORE and you'll get 5-day timeout!)", 0
-            elif free_deploys_7d == 3:
-                return True, f"Deployment allowed (3/3 free used this week - ONE MORE and you'll get 30-day timeout!)", 0
+            if deploys_today >= 4:
+                return True, f"⚠️ Deployment allowed (4 today - ONE MORE and you'll get 30-day ban!)", 0
             elif free_deploys_7d == 2:
-                return True, f"Deployment allowed (2/3 free used this week)", 0
+                return True, f"⚠️ Deployment allowed (2/3 free used this week - ONE MORE and next attempt gets 7-day cooldown!)", 0
             elif free_deploys_7d == 1:
                 return True, f"Deployment allowed (1/3 free used this week)", 0
             else:
