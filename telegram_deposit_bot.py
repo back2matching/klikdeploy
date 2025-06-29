@@ -923,7 +923,7 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # If recovering balance, add it to the user's current balance
             if recovered_balance > 0:
                 conn.execute(
-                    "UPDATE users SET twitter_username = ?, balance = balance + ? WHERE telegram_id = ?",
+                    "UPDATE users SET twitter_username = ?, balance = balance + ?, twitter_verified = FALSE, verification_code = NULL WHERE telegram_id = ?",
                     (twitter_username, recovered_balance, telegram_id)
                 )
                 # Also update deposits table to link old deposits to new username
@@ -933,10 +933,10 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 safe_old = escape_markdown(old_username)
                 safe_new = escape_markdown(twitter_username)
-                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{safe_old}\nTo: @{safe_new}\n\n💰 **Recovered balance: {recovered_balance:.4f} ETH**\n\nYour total balance has been updated."
+                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{safe_old}\nTo: @{safe_new}\n\n💰 **Recovered balance: {recovered_balance:.4f} ETH**\n\n⚠️ **SECURITY:** Account verification reset - you must re-verify @{safe_new} to claim fees."
             else:
                 conn.execute(
-                    "UPDATE users SET twitter_username = ? WHERE telegram_id = ?",
+                    "UPDATE users SET twitter_username = ?, twitter_verified = FALSE, verification_code = NULL WHERE telegram_id = ?",
                     (twitter_username, telegram_id)
                 )
                 # Update deposits table to link old deposits to new username
@@ -946,7 +946,7 @@ async def link_twitter(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 safe_old = escape_markdown(old_username)
                 safe_new = escape_markdown(twitter_username)
-                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{safe_old}\nTo: @{safe_new}\n\nYour wallet and balance remain unchanged."
+                message_text = f"**✅ Twitter username updated!**\n\nFrom: @{safe_old}\nTo: @{safe_new}\n\n⚠️ **SECURITY:** Account verification reset - you must re-verify @{safe_new} to claim fees."
             
             is_update = True
         else:
@@ -1020,32 +1020,66 @@ async def register_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn = sqlite3.connect('deployments.db')
     try:
-        # Update user's wallet
-        conn.execute('''
-            UPDATE users 
-            SET eth_address = ?
-            WHERE telegram_id = ?
-        ''', (eth_address, telegram_id))
+        # Check if user already has a wallet (security check)
+        cursor = conn.execute(
+            "SELECT eth_address FROM users WHERE telegram_id = ?",
+            (telegram_id,)
+        )
+        existing_user = cursor.fetchone()
         
-        if conn.total_changes == 0:
-            await update.message.reply_text("❌ Please link your Twitter first with /link")
-            return
+        if existing_user and existing_user[0]:
+            # User is changing wallet - reset verification for security
+            conn.execute('''
+                UPDATE users 
+                SET eth_address = ?, twitter_verified = FALSE, verification_code = NULL
+                WHERE telegram_id = ?
+            ''', (eth_address, telegram_id))
+            
+            if conn.total_changes == 0:
+                await update.message.reply_text("❌ Please link your Twitter first with /link")
+                return
+            
+            keyboard = [
+                [InlineKeyboardButton("📥 Deposit Instructions", callback_data="deposit")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"**✅ Wallet updated!**\n\n"
+                f"`{eth_address}`\n\n"
+                f"⚠️ **SECURITY:** Account verification reset - you must re-verify your Twitter to claim fees.\n\n"
+                f"Ready to deposit ETH 👇",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        else:
+            # New wallet registration - no verification reset needed
+            conn.execute('''
+                UPDATE users 
+                SET eth_address = ?
+                WHERE telegram_id = ?
+            ''', (eth_address, telegram_id))
+            
+            if conn.total_changes == 0:
+                await update.message.reply_text("❌ Please link your Twitter first with /link")
+                return
+            
+            keyboard = [
+                [InlineKeyboardButton("📥 Deposit Instructions", callback_data="deposit")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(
+                f"**✅ Wallet registered!**\n\n"
+                f"`{eth_address}`\n\n"
+                f"Ready to deposit ETH 👇",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
         
         conn.commit()
-        
-        keyboard = [
-            [InlineKeyboardButton("📥 Deposit Instructions", callback_data="deposit")],
-            [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            f"**✅ Wallet registered!**\n\n"
-            f"`{eth_address}`\n\n"
-            f"Ready to deposit ETH 👇",
-            parse_mode='Markdown',
-            reply_markup=reply_markup
-        )
     finally:
         conn.close()
 

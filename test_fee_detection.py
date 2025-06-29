@@ -316,6 +316,8 @@ async def process_single_fee_claim():
         
         from deployer.database import DeploymentDatabase
         db = DeploymentDatabase()
+        # SECURITY: Automatic verification checks prevent exploits
+        # Users who changed Twitter/wallet must re-verify to claim fees
         fee_splits = db.process_fee_claim_for_user(token_address, value, tx_hash)
         
         source_buyback = fee_splits['source_buyback']
@@ -540,6 +542,8 @@ async def process_all_fee_claims_automated():
                 # NEW: Calculate splits based on user preferences
                 from deployer.database import DeploymentDatabase
                 db = DeploymentDatabase()
+                # SECURITY: Automatic verification checks prevent exploits
+                # Users who changed Twitter/wallet must re-verify to claim fees
                 fee_splits = db.process_fee_claim_for_user(token_address, value, tx_hash)
                 
                 source_buyback = fee_splits['source_buyback']

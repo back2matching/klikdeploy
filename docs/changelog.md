@@ -2,6 +2,46 @@
 
 All notable changes to the Klik Token Deployer bot system will be documented in this file.
 
+## [V3.0] - 2025-01-03
+
+### 💰 Self-Claim Fees System
+
+#### New Feature: Fee Capture Choice
+- **Verified users can now choose**: Community fee split OR self-claim fees
+- **Default behavior**: Unchanged - fees still fund community buybacks
+- **Self-claim mode**: Users get 50% of fees from their token deployments
+- **Maintains buybacks**: 25% source token + 25% $DOK buybacks still happen
+
+#### How It Works
+- **Automated integration**: Works with existing `test_fee_detection.py` system
+- **Smart detection**: System checks deployer preferences for each fee
+- **No manual work**: Fully automated based on user settings
+- **Backwards compatible**: Existing system unchanged
+
+#### User Interface (Telegram Bot)
+- **Fee Settings menu**: Toggle self-claim on/off
+- **Claimable fees view**: See accumulated fees from deployments  
+- **Simple controls**: One-click toggle between modes
+- **Real-time stats**: Track total claimed and available amounts
+
+#### Security Requirements
+- **Twitter verification required**: Only verified accounts can self-claim
+- **Wallet verification required**: Must have deposited from registered wallet
+- **Prevents exploitation**: Unverified users default to community split
+- **Secure preferences**: Settings stored safely in database
+
+#### Database Updates
+- **New tables**: `user_fee_settings`, `deployment_fees`
+- **Fee tracking**: Records claimable amounts per user per token
+- **Migration script**: `migrate_self_claim_fees.py` for safe updates
+- **Full compatibility**: All existing data preserved
+
+#### Benefits
+- **User choice**: Community support OR personal profit
+- **Transparency**: Users see exactly what they earn
+- **Security**: Multiple verification layers
+- **Platform growth**: Incentivizes verification and engagement
+
 ## [2.2.0] - 2025-01-03
 
 ### 🎉 Major Tier System Overhaul - More Generous!

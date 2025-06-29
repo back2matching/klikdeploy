@@ -13,6 +13,7 @@ Usage ($ SYMBOL REQUIRED):
 import asyncio
 import os
 import json
+import sqlite3
 import time
 import re
 from datetime import datetime, timedelta
