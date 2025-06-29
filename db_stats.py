@@ -89,21 +89,39 @@ def quick_stats():
     
     # Self-Claim Fees Quick Stats
     print_section("💰 SELF-CLAIM FEES")
+    
+    # Check for both tables
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='user_fee_settings'")
-    if cursor.fetchone():
-        cursor = conn.execute("""
-            SELECT 
-                SUM(CASE WHEN fee_capture_enabled = 1 THEN 1 ELSE 0 END) as self_claim_users,
-                (SELECT SUM(user_claimable_amount) FROM deployment_fees WHERE user_claimable_amount > 0) as total_claimable
-        """)
-        fees_row = cursor.fetchone()
-        
-        self_claim_users = fees_row['self_claim_users'] or 0
-        total_claimable = fees_row['total_claimable'] or 0
-        
-        print(f"Users with Self-Claim: {self_claim_users} | Claimable: {format_eth(total_claimable)}")
-    else:
+    settings_table_exists = cursor.fetchone() is not None
+    
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='deployment_fees'")  
+    fees_table_exists = cursor.fetchone() is not None
+    
+    if settings_table_exists and fees_table_exists:
+        try:
+            # Get self-claim users count (handle empty table)
+            cursor = conn.execute("SELECT COUNT(*) as count FROM user_fee_settings WHERE fee_capture_enabled = 1")
+            self_claim_users = cursor.fetchone()['count'] or 0
+            
+            # Get total claimable fees
+            cursor = conn.execute("SELECT SUM(user_claimable_amount) as total FROM deployment_fees WHERE user_claimable_amount > 0")
+            result = cursor.fetchone()
+            total_claimable = result['total'] if result and result['total'] else 0
+            
+            # Get tracked deployments count
+            cursor = conn.execute("SELECT COUNT(*) as count FROM deployment_fees")
+            tracked_deployments = cursor.fetchone()['count'] or 0
+            
+            print(f"Self-Claim Users: {self_claim_users} | Tracked Deployments: {tracked_deployments} | Claimable: {format_eth(total_claimable)}")
+            
+        except Exception as e:
+            print(f"Error in fee stats: {e}")
+            # Fallback to simple message
+            print("✅ Self-claim system ready - no fees claimed yet")
+    elif not settings_table_exists or not fees_table_exists:
         print("Not migrated - run: python migrate_self_claim_fees.py")
+    else:
+        print("✅ Self-claim system ready - waiting for user activity")
     
     conn.close()
 

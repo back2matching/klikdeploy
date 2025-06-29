@@ -1,0 +1,4 @@
+Klik Finance Database Export
+Generated: 2025-06-29 09:07:21.419364
+Files exported: 7
+Includes self-claim fees data
