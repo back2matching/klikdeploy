@@ -729,35 +729,14 @@ Deposit to deploy now: t.me/DeployOnKlik"""
             
             if is_holder and holder_deploys_this_week < 10:  # 10 per week for holders!
                 return True, f"✅ Holder deployment allowed (gas: {likely_gas_gwei:.1f} gwei, {holder_deploys_this_week}/10 used this week)"
-            elif free_deploys_today < 1:
+            else:
+                # For non-holders, use progressive cooldown system (already checked earlier)
+                # If we reached here, the progressive cooldown already approved the deployment
+                # (otherwise it would have returned False earlier in the function)
                 if is_vip and likely_gas_gwei > free_gas_limit:
                     return True, f"✅ Free deployment allowed (gas: {likely_gas_gwei:.1f} gwei, 20k+ followers benefit)"
                 else:
                     return True, f"✅ Free deployment allowed (gas: {likely_gas_gwei:.1f} gwei)"
-            else:
-                # This should rarely happen with progressive cooldown, but just in case
-                # Get user's last deployment to show them
-                last_deployment = self.db.get_last_successful_deployment(username)
-                
-                if last_deployment:
-                    token_symbol_last, token_address = last_deployment
-                    return False, f"""🚫 You've already deployed ${token_symbol_last}!
-
-📈 dexscreener.com/ethereum/{token_address}
-
-New limit: ~3 free deploys per week
-
-Want to deploy NOW?
-💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Or hold 5M+ $DOK for 10/week"""
-                else:
-                    return False, f"""🚫 You've already used your free deployments!
-
-New limit: ~3 free deploys per week
-
-Want to deploy NOW?
-💰 Deposit ETH: t.me/DeployOnKlik
-🎯 Or hold 5M+ $DOK for 10/week"""
         
         # Tier 2: Holder deployment (gas <= 15 gwei)
         if is_holder:
