@@ -121,6 +121,37 @@ class DeploymentDatabase:
             except sqlite3.OperationalError:
                 pass  # Column already exists
             
+            # NEW: User fee capture settings table
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS user_fee_settings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE,
+                    fee_capture_enabled BOOLEAN DEFAULT FALSE,
+                    last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (username) REFERENCES users(twitter_username)
+                )
+            ''')
+            
+            # NEW: Individual deployment fee tracking
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS deployment_fees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    deployment_id INTEGER,
+                    token_address TEXT,
+                    token_symbol TEXT,
+                    username TEXT,
+                    total_fees_generated REAL DEFAULT 0,
+                    user_claimable_amount REAL DEFAULT 0,
+                    claimed_amount REAL DEFAULT 0,
+                    claim_tx_hash TEXT,
+                    claimed_at TIMESTAMP,
+                    status TEXT DEFAULT 'pending', -- 'pending', 'claimable', 'claimed'
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (deployment_id) REFERENCES deployments(id),
+                    FOREIGN KEY (username) REFERENCES users(twitter_username)
+                )
+            ''')
+            
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_username_date 
                 ON deployments(username, requested_at)
@@ -806,4 +837,285 @@ class DeploymentDatabase:
                 WHERE twitter_verified = FALSE AND balance > 0
                 ORDER BY balance DESC
             ''')
-            return cursor.fetchall() 
+            return cursor.fetchall()
+    
+    # SELF-CLAIM FEES FUNCTIONALITY
+    
+    def set_user_fee_capture_preference(self, username: str, enabled: bool) -> bool:
+        """Set user's fee capture preference
+        
+        Args:
+            username: Twitter username
+            enabled: True to enable fee capture, False for community split
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Ensure user exists and is verified
+                cursor = conn.execute(
+                    "SELECT twitter_verified FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+                    (username,)
+                )
+                user = cursor.fetchone()
+                
+                if not user or not user[0]:
+                    # User doesn't exist or not verified
+                    return False
+                
+                # Insert or update preference
+                conn.execute('''
+                    INSERT OR REPLACE INTO user_fee_settings (username, fee_capture_enabled, last_modified)
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                ''', (username.lower(), enabled))
+                
+                conn.commit()
+                return True
+                
+        except Exception as e:
+            self.logger.error(f"Error setting fee capture preference for {username}: {e}")
+            return False
+    
+    def get_user_fee_capture_preference(self, username: str) -> bool:
+        """Get user's fee capture preference
+        
+        Args:
+            username: Twitter username
+            
+        Returns:
+            True if user has fee capture enabled, False for community split
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            # Check if user is verified first
+            cursor = conn.execute(
+                "SELECT twitter_verified FROM users WHERE LOWER(twitter_username) = LOWER(?)",
+                (username,)
+            )
+            user = cursor.fetchone()
+            
+            if not user or not user[0]:
+                # Unverified users always get community split
+                return False
+            
+            # Get fee capture setting
+            cursor = conn.execute(
+                "SELECT fee_capture_enabled FROM user_fee_settings WHERE LOWER(username) = LOWER(?)",
+                (username,)
+            )
+            result = cursor.fetchone()
+            
+            # Default to False (community split) if no setting found
+            return result[0] if result else False
+    
+    def record_deployment_fee_potential(self, deployment_id: int, token_address: str, 
+                                       token_symbol: str, username: str) -> None:
+        """Record a deployment that can potentially generate fees
+        
+        Args:
+            deployment_id: ID from deployments table
+            token_address: Token contract address
+            token_symbol: Token symbol
+            username: Twitter username who deployed
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute('''
+                    INSERT INTO deployment_fees 
+                    (deployment_id, token_address, token_symbol, username, status)
+                    VALUES (?, ?, ?, ?, 'pending')
+                ''', (deployment_id, token_address, token_symbol, username.lower()))
+                conn.commit()
+                
+        except Exception as e:
+            self.logger.error(f"Error recording deployment fee potential: {e}")
+    
+    def process_fee_claim_for_user(self, token_address: str, total_fee_amount: float, 
+                                  claim_tx_hash: str) -> Dict[str, float]:
+        """Process fee claim and determine splits based on user preferences
+        
+        Args:
+            token_address: Token that generated fees
+            total_fee_amount: Total ETH amount claimed
+            claim_tx_hash: Transaction hash of the fee claim
+            
+        Returns:
+            Dict with fee distribution: {
+                'user_claims': float,      # Total to be claimed by users
+                'source_buyback': float,   # For source token buyback  
+                'dok_buyback': float,      # For DOK buyback
+                'treasury': float          # For treasury
+            }
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            # Find all deployments for this token
+            cursor = conn.execute('''
+                SELECT df.id, df.username, df.deployment_id
+                FROM deployment_fees df
+                INNER JOIN deployments d ON df.deployment_id = d.id
+                WHERE LOWER(df.token_address) = LOWER(?) AND df.status = 'pending'
+            ''', (token_address,))
+            
+            deployments = cursor.fetchall()
+            
+            if not deployments:
+                # No deployments found, use community split
+                return {
+                    'user_claims': 0.0,
+                    'source_buyback': total_fee_amount * 0.25,
+                    'dok_buyback': total_fee_amount * 0.25,
+                    'treasury': total_fee_amount * 0.5
+                }
+            
+            # Calculate splits
+            total_user_claims = 0.0
+            
+            for fee_id, username, deployment_id in deployments:
+                # Check if user wants fee capture
+                wants_fee_capture = self.get_user_fee_capture_preference(username)
+                
+                if wants_fee_capture:
+                    # User gets 50% of their deployment's fees (what would normally go to treasury)
+                    user_claimable = total_fee_amount * 0.5 / len(deployments)
+                    total_user_claims += user_claimable
+                    
+                    # Update deployment_fees record
+                    conn.execute('''
+                        UPDATE deployment_fees 
+                        SET total_fees_generated = ?, 
+                            user_claimable_amount = ?, 
+                            status = 'claimable'
+                        WHERE id = ?
+                    ''', (total_fee_amount, user_claimable, fee_id))
+            
+            # Calculate remaining splits
+            remaining_amount = total_fee_amount - total_user_claims
+            source_buyback = remaining_amount * 0.5  # 25% of original becomes 50% of remaining
+            dok_buyback = remaining_amount * 0.5     # 25% of original becomes 50% of remaining
+            treasury = 0.0                           # What's left goes to users
+            
+            conn.commit()
+            
+            return {
+                'user_claims': total_user_claims,
+                'source_buyback': source_buyback,
+                'dok_buyback': dok_buyback,
+                'treasury': treasury
+            }
+    
+    def get_user_claimable_fees(self, username: str) -> List[Dict]:
+        """Get all claimable fees for a user
+        
+        Args:
+            username: Twitter username
+            
+        Returns:
+            List of claimable fee records
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute('''
+                SELECT df.id, df.token_symbol, df.token_address, df.user_claimable_amount,
+                       df.created_at, d.deployed_at
+                FROM deployment_fees df
+                INNER JOIN deployments d ON df.deployment_id = d.id
+                WHERE LOWER(df.username) = LOWER(?) AND df.status = 'claimable'
+                ORDER BY df.created_at DESC
+            ''', (username,))
+            
+            results = []
+            for row in cursor.fetchall():
+                results.append({
+                    'id': row[0],
+                    'token_symbol': row[1],
+                    'token_address': row[2],
+                    'claimable_amount': row[3],
+                    'fee_generated_at': row[4],
+                    'token_deployed_at': row[5]
+                })
+            
+            return results
+    
+    def claim_user_fees(self, username: str, fee_ids: List[int], claim_tx_hash: str) -> float:
+        """Process user fee claim
+        
+        Args:
+            username: Twitter username
+            fee_ids: List of fee IDs to claim
+            claim_tx_hash: Transaction hash of the claim
+            
+        Returns:
+            Total amount claimed
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                total_claimed = 0.0
+                
+                for fee_id in fee_ids:
+                    # Verify ownership and claimable status
+                    cursor = conn.execute('''
+                        SELECT user_claimable_amount 
+                        FROM deployment_fees 
+                        WHERE id = ? AND LOWER(username) = LOWER(?) AND status = 'claimable'
+                    ''', (fee_id, username))
+                    
+                    result = cursor.fetchone()
+                    if result:
+                        amount = result[0]
+                        total_claimed += amount
+                        
+                        # Mark as claimed
+                        conn.execute('''
+                            UPDATE deployment_fees 
+                            SET claimed_amount = user_claimable_amount,
+                                claim_tx_hash = ?,
+                                claimed_at = CURRENT_TIMESTAMP,
+                                status = 'claimed'
+                            WHERE id = ?
+                        ''', (claim_tx_hash, fee_id))
+                
+                conn.commit()
+                return total_claimed
+                
+        except Exception as e:
+            self.logger.error(f"Error claiming fees for {username}: {e}")
+            return 0.0
+    
+    def get_user_fee_stats(self, username: str) -> Dict:
+        """Get user's fee statistics
+        
+        Args:
+            username: Twitter username
+            
+        Returns:
+            Dict with fee stats
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            # Get claimable amount
+            cursor = conn.execute('''
+                SELECT COALESCE(SUM(user_claimable_amount), 0)
+                FROM deployment_fees 
+                WHERE LOWER(username) = LOWER(?) AND status = 'claimable'
+            ''', (username,))
+            claimable = cursor.fetchone()[0]
+            
+            # Get total claimed
+            cursor = conn.execute('''
+                SELECT COALESCE(SUM(claimed_amount), 0)
+                FROM deployment_fees 
+                WHERE LOWER(username) = LOWER(?) AND status = 'claimed'
+            ''', (username,))
+            total_claimed = cursor.fetchone()[0]
+            
+            # Get number of deployments with fees
+            cursor = conn.execute('''
+                SELECT COUNT(DISTINCT token_address)
+                FROM deployment_fees 
+                WHERE LOWER(username) = LOWER(?) AND total_fees_generated > 0
+            ''', (username,))
+            tokens_with_fees = cursor.fetchone()[0]
+            
+            return {
+                'claimable_amount': claimable,
+                'total_claimed': total_claimed,
+                'tokens_with_fees': tokens_with_fees
+            } 

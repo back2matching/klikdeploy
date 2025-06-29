@@ -529,8 +529,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Add fee capture information
         if is_verified:
-            message += "🎉 **Fee Capture Available!**\n"
-            message += "You can claim 50% of fees from your deployments\n"
+            # Import database to check fee capture preference
+            from deployer.database import DeploymentDatabase
+            db = DeploymentDatabase()
+            fee_capture_enabled = db.get_user_fee_capture_preference(twitter_username)
+            fee_stats = db.get_user_fee_stats(twitter_username)
+            
+            if fee_capture_enabled:
+                message += "💰 **Self-Claim Fees: ENABLED**\n"
+                message += f"• Claimable: {fee_stats['claimable_amount']:.4f} ETH\n"
+                message += f"• Total claimed: {fee_stats['total_claimed']:.4f} ETH\n"
+            else:
+                message += "🌍 **Community Fee Split: ACTIVE**\n"
+                message += "Fees fund $DOK & source token buybacks\n"
         else:
             message += "ℹ️ **Verify Twitter to unlock fee capture**\n"
             message += "Currently: All fees go to $DOK buyback\n"
@@ -546,9 +557,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("⚙️ Settings", callback_data="settings")]
         ]
         
-        # Add verification button based on status
+        # Add verification and fee capture buttons based on status
         if is_verified:
-            keyboard.append([InlineKeyboardButton("✅ Verified Account", callback_data="check_verification")])
+            keyboard.append([InlineKeyboardButton("✅ Verified Account", callback_data="check_verification"),
+                           InlineKeyboardButton("💰 Fee Settings", callback_data="fee_settings")])
         else:
             keyboard.append([InlineKeyboardButton("🔐 Verify Twitter", callback_data="verify_twitter")])
             
@@ -643,6 +655,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "check_verification":
         await check_verification_status(update, context)
+    
+    elif query.data == "fee_settings":
+        await show_fee_settings(update, context)
+    
+    elif query.data == "enable_fee_capture":
+        await toggle_fee_capture(update, context, True)
+    
+    elif query.data == "disable_fee_capture":
+        await toggle_fee_capture(update, context, False)
+    
+    elif query.data == "claim_fees":
+        await show_claimable_fees(update, context)
 
 async def show_gas_prices(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show current gas prices and deployment costs"""
@@ -2233,6 +2257,222 @@ async def manual_verify_user(update: Update, context: ContextTypes.DEFAULT_TYPE)
             
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def show_fee_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show fee capture settings for verified users"""
+    query = update.callback_query
+    telegram_id = query.from_user.id
+    
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username, twitter_verified FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or not user[1]:  # Not verified
+        await safe_edit_message(query, "❌ Fee capture requires Twitter verification!")
+        return
+    
+    twitter_username = user[0]
+    
+    # Import database to get current settings
+    from deployer.database import DeploymentDatabase
+    db = DeploymentDatabase()
+    fee_capture_enabled = db.get_user_fee_capture_preference(twitter_username)
+    fee_stats = db.get_user_fee_stats(twitter_username)
+    
+    safe_twitter = escape_markdown(twitter_username)
+    
+    if fee_capture_enabled:
+        current_mode = "💰 **SELF-CLAIM FEES**"
+        current_desc = "You claim 50% of fees from your deployments"
+        toggle_button = InlineKeyboardButton("🌍 Switch to Community Split", callback_data="disable_fee_capture")
+    else:
+        current_mode = "🌍 **COMMUNITY FEE SPLIT**"
+        current_desc = "Fees fund $DOK buyback & source token pumps"
+        toggle_button = InlineKeyboardButton("💰 Enable Self-Claim", callback_data="enable_fee_capture")
+    
+    keyboard = [
+        [toggle_button],
+        [InlineKeyboardButton("💰 View Claimable Fees", callback_data="claim_fees")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    message = (
+        f"**Fee Capture Settings 💰**\n"
+        f"══════════════════════\n\n"
+        f"**Account:** @{safe_twitter}\n"
+        f"**Current Mode:** {current_mode}\n"
+        f"{current_desc}\n\n"
+        f"══════════════════════\n"
+        f"**Your Fee Statistics:**\n"
+        f"══════════════════════\n"
+        f"• Claimable now: **{fee_stats['claimable_amount']:.4f} ETH**\n"
+        f"• Total claimed: **{fee_stats['total_claimed']:.4f} ETH**\n"
+        f"• Tokens with fees: **{fee_stats['tokens_with_fees']}**\n\n"
+        f"══════════════════════\n"
+        f"**How It Works:**\n"
+        f"══════════════════════\n"
+        f"**🌍 Community Split:**\n"
+        f"• 25% → Source token buyback (pump chart)\n"
+        f"• 25% → $DOK buyback (pump chart)\n"
+        f"• 50% → Platform treasury\n"
+        f"• **You get:** Chart pumps for your tokens\n\n"
+        f"**💰 Self-Claim:**\n"
+        f"• 25% → Source token buyback (pump chart)\n"
+        f"• 25% → $DOK buyback (pump chart)\n"
+        f"• 50% → **Your wallet** (claimable)\n"
+        f"• **You get:** ETH + chart pumps\n\n"
+        f"**Note:** Only verified accounts can self-claim"
+    )
+    
+    await safe_edit_message(query, message, reply_markup)
+
+async def toggle_fee_capture(update: Update, context: ContextTypes.DEFAULT_TYPE, enable: bool):
+    """Toggle user's fee capture preference"""
+    query = update.callback_query
+    telegram_id = query.from_user.id
+    
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username, twitter_verified FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or not user[1]:  # Not verified
+        await safe_edit_message(query, "❌ Fee capture requires Twitter verification!")
+        return
+    
+    twitter_username = user[0]
+    
+    # Import database to update preference
+    from deployer.database import DeploymentDatabase
+    db = DeploymentDatabase()
+    success = db.set_user_fee_capture_preference(twitter_username, enable)
+    
+    if success:
+        mode = "Self-Claim Fees" if enable else "Community Fee Split"
+        keyboard = [[InlineKeyboardButton("🔄 Back to Fee Settings", callback_data="fee_settings")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        safe_twitter = escape_markdown(twitter_username)
+        message = (
+            f"**✅ Setting Updated!**\n"
+            f"══════════════════════\n\n"
+            f"**Account:** @{safe_twitter}\n"
+            f"**New Mode:** {mode}\n\n"
+        )
+        
+        if enable:
+            message += (
+                f"**💰 Self-Claim Fees Enabled**\n"
+                f"══════════════════════\n"
+                f"From now on, you can claim 50% of fees\n"
+                f"from your future deployments.\n\n"
+                f"**Next Steps:**\n"
+                f"1. Deploy more tokens to generate fees\n"
+                f"2. Check 'View Claimable Fees' regularly\n"
+                f"3. Claim your ETH when ready!"
+            )
+        else:
+            message += (
+                f"**🌍 Community Split Active**\n"
+                f"══════════════════════\n"
+                f"Your fees will fund community buybacks:\n"
+                f"• 25% → Your token buybacks (pump)\n"
+                f"• 25% → $DOK buybacks (pump)\n"
+                f"• 50% → Platform development\n\n"
+                f"This helps pump all community tokens!"
+            )
+        
+        await safe_edit_message(query, message, reply_markup)
+    else:
+        await safe_edit_message(query, "❌ Error updating preference. Please try again.")
+
+async def show_claimable_fees(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user's claimable fees"""
+    query = update.callback_query
+    telegram_id = query.from_user.id
+    
+    conn = sqlite3.connect('deployments.db')
+    cursor = conn.execute(
+        "SELECT twitter_username, twitter_verified FROM users WHERE telegram_id = ?",
+        (telegram_id,)
+    )
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or not user[1]:  # Not verified
+        await safe_edit_message(query, "❌ Fee claiming requires Twitter verification!")
+        return
+    
+    twitter_username = user[0]
+    
+    # Import database to get claimable fees
+    from deployer.database import DeploymentDatabase
+    db = DeploymentDatabase()
+    claimable_fees = db.get_user_claimable_fees(twitter_username)
+    fee_stats = db.get_user_fee_stats(twitter_username)
+    
+    safe_twitter = escape_markdown(twitter_username)
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 Back to Fee Settings", callback_data="fee_settings")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if not claimable_fees or fee_stats['claimable_amount'] == 0:
+        message = (
+            f"**Claimable Fees 💰**\n"
+            f"══════════════════════\n\n"
+            f"**Account:** @{safe_twitter}\n"
+            f"**Claimable:** 0.0000 ETH\n\n"
+            f"**No fees to claim yet!**\n"
+            f"══════════════════════\n"
+            f"• Deploy more tokens to generate fees\n"
+            f"• Fees are collected weekly by platform\n"
+            f"• Once collected, they become claimable\n"
+            f"• Only tokens with trading volume generate fees\n\n"
+            f"**Historical Stats:**\n"
+            f"══════════════════════\n"
+            f"• Total claimed: **{fee_stats['total_claimed']:.4f} ETH**\n"
+            f"• Tokens with fees: **{fee_stats['tokens_with_fees']}**\n\n"
+            f"Keep deploying to earn more! 🚀"
+        )
+    else:
+        message = (
+            f"**Claimable Fees 💰**\n"
+            f"══════════════════════\n\n"
+            f"**Account:** @{safe_twitter}\n"
+            f"**Total Claimable:** {fee_stats['claimable_amount']:.4f} ETH\n\n"
+            f"**Your Fee-Generating Tokens:**\n"
+            f"══════════════════════\n"
+        )
+        
+        for fee in claimable_fees[:5]:  # Show top 5
+            message += f"• **${fee['token_symbol']}**: {fee['claimable_amount']:.4f} ETH\n"
+        
+        if len(claimable_fees) > 5:
+            message += f"... and {len(claimable_fees) - 5} more\n"
+        
+        message += (
+            f"\n══════════════════════\n"
+            f"**Historical Stats:**\n"
+            f"══════════════════════\n"
+            f"• Total claimed: **{fee_stats['total_claimed']:.4f} ETH**\n"
+            f"• Tokens with fees: **{fee_stats['tokens_with_fees']}**\n\n"
+            f"**⚠️ Note:** Manual claiming not yet implemented.\n"
+            f"Coming in next update! For now, fees accumulate\n"
+            f"and will be claimable via smart contract soon."
+        )
+    
+    await safe_edit_message(query, message, reply_markup)
 
 def main():
     """Start the bot"""

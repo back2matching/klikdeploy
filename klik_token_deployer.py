@@ -1168,6 +1168,25 @@ Quick & easy deposits!"""
                 if image_ipfs:
                     self.db.update_image_ipfs(request.tweet_id, image_ipfs)
                 
+                # NEW: Record deployment for fee tracking
+                try:
+                    # Get deployment ID
+                    with sqlite3.connect(self.db.db_path) as conn:
+                        cursor = conn.execute(
+                            "SELECT id FROM deployments WHERE tweet_id = ?",
+                            (request.tweet_id,)
+                        )
+                        deployment_row = cursor.fetchone()
+                        if deployment_row:
+                            deployment_id = deployment_row[0]
+                            self.db.record_deployment_fee_potential(
+                                deployment_id, request.token_address, 
+                                request.token_symbol, request.username
+                            )
+                            print(f"📊 Recorded fee tracking for ${request.token_symbol}")
+                except Exception as e:
+                    print(f"⚠️  Warning: Could not record fee tracking: {e}")
+                
                 return True
             else:
                 request.status = "failed"

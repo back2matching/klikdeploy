@@ -22,3 +22,19 @@ id,source_type,amount,tx_hash,description,created_at
 21,fee_detection,0.002428665895522388,0x66570b7c11bbd61d1fd5fea6d5e85719f53dc9fdf35edd1dbcd993b78971c7be,Treasury from $ETHAEAGLE fees,2025-06-28 02:23:36
 22,fee_detection,0.000747512437810945,0x49850c18b454056753fd8beb665c61ccaf0097e72aa17cf4796d3f82144b2d4d,Treasury from $Y fees,2025-06-28 02:24:28
 23,fee_detection,0.48651065070636484,0xaf643cceb4cba24532afc4181c3746124e0af601e21e4e670a3ba27b4661acf9,Treasury from $DOK fees,2025-06-28 02:24:49
+24,fee_detection,-1.11,0xc782458477bbb1105b821ab9bf97e205c0edc97713a1818b3ff20f77aea105bb,Transfer to dev fund: devapi,2025-06-29 00:08:16
+25,dev_protected,1.11,0xc782458477bbb1105b821ab9bf97e205c0edc97713a1818b3ff20f77aea105bb,From treasury: devapi,2025-06-29 00:08:16
+26,fee_detection,-0.7535065684876872,0x30ac6e4b218cd51f61a547e5247492b60fa7bd762650d2291f9a876b8e1bf971,Reconciliation: Past gas expenses,2025-06-29 00:13:50
+27,gas_expenses,0.7535065684876872,0x30ac6e4b218cd51f61a547e5247492b60fa7bd762650d2291f9a876b8e1bf971,Reconciliation: Past free/holder deployment gas costs,2025-06-29 00:13:50
+28,fee_detection,-0.00217626505716608,0x431ebd44cf4057b9d97c031346a894b5e1e3312f213d3298eb90408b8d8d6351,Gas expense: Gas for free deploy: $MIETA by @rnewman1229,2025-06-29 00:30:37
+29,gas_expenses,0.00217626505716608,0x431ebd44cf4057b9d97c031346a894b5e1e3312f213d3298eb90408b8d8d6351,Gas for free deploy: $MIETA by @rnewman1229,2025-06-29 00:30:37
+30,fee_detection,-0.002124447150926624,0x67bc60dca8a0aec9876b80d6ebcbaab16fc561bc0484947072b4e1cb76e04b8d,Gas expense: Gas for free deploy: $DUKE by @grok,2025-06-29 00:41:48
+31,gas_expenses,0.002124447150926624,0x67bc60dca8a0aec9876b80d6ebcbaab16fc561bc0484947072b4e1cb76e04b8d,Gas for free deploy: $DUKE by @grok,2025-06-29 00:41:48
+32,fee_detection,-0.002372384373561972,0xf734eec79074a82f0b10b417f65fae88fef60b1025b9171dab575561757863e0,Gas expense: Gas for free deploy: $FLNC by @flaunchybot,2025-06-29 04:06:37
+33,gas_expenses,0.002372384373561972,0xf734eec79074a82f0b10b417f65fae88fef60b1025b9171dab575561757863e0,Gas for free deploy: $FLNC by @flaunchybot,2025-06-29 04:06:37
+34,fee_detection,-0.00208257637438048,0x59c3f69865d3a6210f44e6ab09728e2f536e43d9549e20838db2d74644ca258e,Gas expense: Gas for free deploy: $TICKER by @flaunchybot,2025-06-29 04:38:00
+35,gas_expenses,0.00208257637438048,0x59c3f69865d3a6210f44e6ab09728e2f536e43d9549e20838db2d74644ca258e,Gas for free deploy: $TICKER by @flaunchybot,2025-06-29 04:38:00
+36,fee_detection,-0.00442514487400092,0x1742c600cf57695e75e2af988d015ef074764e33bdaac17f6d53808d2c08c7af,Gas expense: Gas for free deploy: $MONKE by @engr_ravex,2025-06-29 07:23:00
+37,gas_expenses,0.00442514487400092,0x1742c600cf57695e75e2af988d015ef074764e33bdaac17f6d53808d2c08c7af,Gas for free deploy: $MONKE by @engr_ravex,2025-06-29 07:23:00
+38,fee_detection,-0.00473040900675616,0xb4174798dc13c02c5654c35fd6063c80dc7c5fa3cf24fa27e4fe3f631d7e9f04,Gas expense: Gas for free deploy: $GORK by @Usiclabs_,2025-06-29 07:42:12
+39,gas_expenses,0.00473040900675616,0xb4174798dc13c02c5654c35fd6063c80dc7c5fa3cf24fa27e4fe3f631d7e9f04,Gas for free deploy: $GORK by @Usiclabs_,2025-06-29 07:42:12

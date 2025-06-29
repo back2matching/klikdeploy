@@ -311,15 +311,22 @@ async def process_single_fee_claim():
         print(f"   Address: {token_address}")
         print(f"   Token ID: {decoded['token_id']}")
         
-        # Step 3: Calculate splits
-        print("\nStep 3: Calculating buyback splits...")
-        source_buyback = value * 0.25
-        dok_buyback = value * 0.25
-        treasury = value * 0.5
+        # Step 3: Calculate splits based on user preferences
+        print("\nStep 3: Calculating buyback splits based on user preferences...")
+        
+        from deployer.database import DeploymentDatabase
+        db = DeploymentDatabase()
+        fee_splits = db.process_fee_claim_for_user(token_address, value, tx_hash)
+        
+        source_buyback = fee_splits['source_buyback']
+        dok_buyback = fee_splits['dok_buyback'] 
+        treasury = fee_splits['treasury']
+        user_claims = fee_splits['user_claims']
         
         print(f"   Source token buyback: {source_buyback:.6f} ETH")
         print(f"   DOK buyback: {dok_buyback:.6f} ETH")
         print(f"   Treasury: {treasury:.6f} ETH")
+        print(f"   User claimable: {user_claims:.6f} ETH")
         
         # Ask for confirmation
         print("\n" + "="*50)
@@ -530,10 +537,21 @@ async def process_all_fee_claims_automated():
                 
                 print(f"     Token: ${token_symbol}")
                 
-                # Calculate splits
-                source_buyback = value * 0.25
-                dok_buyback = value * 0.25
-                treasury = value * 0.5
+                # NEW: Calculate splits based on user preferences
+                from deployer.database import DeploymentDatabase
+                db = DeploymentDatabase()
+                fee_splits = db.process_fee_claim_for_user(token_address, value, tx_hash)
+                
+                source_buyback = fee_splits['source_buyback']
+                dok_buyback = fee_splits['dok_buyback']
+                treasury = fee_splits['treasury']
+                user_claims = fee_splits['user_claims']
+                
+                print(f"     Fee distribution:")
+                print(f"     - Source buyback: {source_buyback:.6f} ETH")
+                print(f"     - DOK buyback: {dok_buyback:.6f} ETH")
+                print(f"     - Treasury: {treasury:.6f} ETH")
+                print(f"     - User claims: {user_claims:.6f} ETH")
                 
                 # Track whether both buybacks succeed
                 source_success = False
