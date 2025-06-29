@@ -2230,18 +2230,43 @@ Wait 7 days OR deposit: t.me/DeployOnKlik"""
 
 Wait 7 days OR deposit: t.me/DeployOnKlik"""
                     
-                    elif "spam attempts" in instructions and "more attempts = 30-day ban" in instructions:
-                        # This is a spam escalation warning - extract the key info
-                        spam_match = re.search(r'(\d+)/10 spam attempts', instructions)
-                        reset_match = re.search(r'Next reset: (\d+/\d+)', instructions)
-                        attempts_match = re.search(r'(\d+) more attempts = 30-day ban until (\d+/\d+)', instructions)
+                    elif "warnings" in instructions and "more = 30-day ban" in instructions:
+                        # This is a spam escalation warning with deployments - extract the key info
+                        spam_match = re.search(r'(\d+)/10 warnings', instructions)
+                        reset_match = re.search(r'Reset: (\d+/\d+)', instructions)
+                        attempts_match = re.search(r'(\d+) more = 30-day ban \((\d+/\d+)\)', instructions)
                         
                         spam_count = spam_match.group(1) if spam_match else "?"
                         reset_date = reset_match.group(1) if reset_match else "?"
                         attempts_left = attempts_match.group(1) if attempts_match else "?"
                         ban_date = attempts_match.group(2) if attempts_match else "?"
                         
-                        reply_text = f"""@{username} Weekly limit exceeded! ({spam_count}/10 warnings)
+                        # Extract deployments if present
+                        if "\n\n$" in instructions:
+                            lines = instructions.split('\n')
+                            deploy_section = []
+                            
+                            for line in lines:
+                                if line.startswith('$') and 'https://dexscreener.com' in line:
+                                    deploy_section.append(line)
+                            
+                            if deploy_section:
+                                deploy_text = "\n".join(deploy_section)
+                                reply_text = f"""@{username} Weekly limit exceeded! ({spam_count}/10 warnings)
+
+{deploy_text}
+
+Reset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})
+Stop spamming or deposit: t.me/DeployOnKlik"""
+                            else:
+                                # Fallback without deployments
+                                reply_text = f"""@{username} Weekly limit exceeded! ({spam_count}/10 warnings)
+
+Reset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})
+Stop spamming or deposit: t.me/DeployOnKlik"""
+                        else:
+                            # No deployments in this warning
+                            reply_text = f"""@{username} Weekly limit exceeded! ({spam_count}/10 warnings)
 
 Reset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})
 Stop spamming or deposit: t.me/DeployOnKlik"""

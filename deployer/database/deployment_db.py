@@ -308,19 +308,41 @@ class DeploymentDatabase:
                     ''', (escalated_end, spam_attempts, now, username))
                     return False, f"SPAM BAN: 10 attempts during cooldown. 30-day ban applied", 30
                 else:
-                    # Update spam attempt count and show warning
+                    # Update spam attempt count and show warning WITH DEPLOYMENTS
                     conn.execute('''
                         UPDATE deployment_cooldowns 
                         SET spam_attempts = ?, updated_at = ?
                         WHERE LOWER(username) = LOWER(?)
                     ''', (spam_attempts, now, username))
                     
-                    # Show escalating warnings
+                    # Get their deployments to show in the warning message  
+                    cursor = conn.execute('''
+                        SELECT token_symbol, token_address 
+                        FROM deployments 
+                        WHERE LOWER(username) = LOWER(?) 
+                        AND requested_at > ? 
+                        AND status = 'success' 
+                        AND token_address IS NOT NULL
+                        ORDER BY deployed_at DESC 
+                        LIMIT 3
+                    ''', (username, seven_days_ago))
+                    
+                    recent_deployments = cursor.fetchall()
+                    
+                    # Show escalating warnings with deployments
                     attempts_left = 10 - spam_attempts
                     reset_date = cooldown_until.strftime('%m/%d')
                     ban_date = (now + timedelta(days=30)).strftime('%m/%d')
                     
-                    return False, f"Weekly limit reached ({spam_attempts}/10 spam attempts). Next reset: {reset_date}. {attempts_left} more attempts = 30-day ban until {ban_date}", days_left
+                    if recent_deployments:
+                        deploy_list = []
+                        for symbol, address in recent_deployments:
+                            deploy_list.append(f"${symbol}: https://dexscreener.com/ethereum/{address}")
+                        deployments_text = "\n".join(deploy_list)
+                        
+                        return False, f"Weekly limit exceeded! ({spam_attempts}/10 warnings)\n\n{deployments_text}\n\nReset: {reset_date} | {attempts_left} more = 30-day ban ({ban_date})", days_left
+                    else:
+                        return False, f"Weekly limit exceeded! ({spam_attempts}/10 warnings). Reset: {reset_date}. {attempts_left} more = 30-day ban ({ban_date})", days_left
             
             # Count free deployments in last 7 days (more accurate)
             cursor = conn.execute('''
