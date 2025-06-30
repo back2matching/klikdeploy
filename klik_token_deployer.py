@@ -500,90 +500,38 @@ class KlikTokenDeployer:
     def parse_tweet_for_token(self, tweet_text: str) -> Optional[Dict[str, str]]:
         """Parse tweet text to extract token name/symbol
         
-        REQUIRES EXACT deployment format to prevent accidental deployments
+        ONLY accepts EXACT deployment format - no exceptions!
         
-        Valid formats:
+        Valid formats ONLY:
         "@DeployOnKlik $MEME" -> {symbol: "MEME", name: "MEME"}
         "@DeployOnKlik $DOG - DogeCoin" -> {symbol: "DOG", name: "DogeCoin"}
         "@DeployOnKlik $CAT + CatCoin" -> {symbol: "CAT", name: "CatCoin"}
         
-        Invalid (conversation mentions):
-        "@DeployOnKlik new ath soon!! $DOK" -> None (not deployment format)
-        "@DeployOnKlik what do you think of $TOKEN" -> None (asking opinion)
-        "@user @DeployOnKlik thoughts on $TOKEN" -> None (not deployment format)
+        Everything else is ignored (returns None):
+        "@DeployOnKlik new ath soon!! $DOK" -> None (ignored)
+        "@DeployOnKlik what do you think of $TOKEN" -> None (ignored)
+        "@user @DeployOnKlik thoughts on $TOKEN" -> None (ignored)
+        "tell me more about $BULL which you deployed through @DeployOnKlik" -> None (ignored)
         
         Returns:
             Dict with 'symbol' and 'name' if valid deployment request
             Dict with 'error' and 'error_type' if invalid deployment format
-            None if not a deployment attempt
+            None if not a deployment attempt (MOST CASES)
         """
         original_text = tweet_text.strip()
         
-        # ULTRA STRICT FORMAT CHECK: Must be EXACTLY @DeployOnKlik $SYMBOL [optional name]
+        # ULTRA STRICT: Must have @DeployOnKlik immediately followed by $SYMBOL
         # NO other text allowed between @DeployOnKlik and $SYMBOL
+        # Pattern matches: @DeployOnKlik + whitespace + $SYMBOL + optional name
+        strict_pattern = rf'@{re.escape(self.bot_username)}\s+\$([a-zA-Z0-9]+)(?:\s*[-+]\s*([^@\n#]*?))?(?:\s*$|$)'
         
-        # Pattern: @DeployOnKlik followed by optional whitespace, then immediately $SYMBOL
-        # This prevents "new ath soon!! $DOK" type false positives
-        strict_pattern = rf'@{re.escape(self.bot_username)}\s+\$([a-zA-Z0-9]+)(?:\s*[-+]\s*([^@\n]*?))?(?:\s*$|[\s@])'
-        
-        # Must be case-insensitive but structure-sensitive
+        # Check if it matches the EXACT format
         symbol_match = re.search(strict_pattern, original_text, re.IGNORECASE)
         
         if not symbol_match:
-            # Check if they mentioned our bot at all
-            if f'@{self.bot_username.lower()}' in original_text.lower():
-                # They mentioned us - check if there are $ symbols anywhere
-                dollar_symbols = re.findall(r'\$([a-zA-Z0-9]+)', original_text)
-                if dollar_symbols:
-                    # They mentioned us AND have $ symbols, but NOT in proper format
-                    
-                    # EXPANDED conversation detection - these indicate NOT a deployment
-                    conversation_indicators = [
-                        # Opinion/thoughts
-                        'thoughts on', 'think of', 'think about', 'opinion on', 'what about', 
-                        'how about', 'check out', 'look at', 'see this', 'seen this',
-                        
-                        # Market talk (NOT deployment)
-                        'alpha', 'bullish', 'bearish', 'pump', 'dump', 'moon', 'ath', 'new ath',
-                        'bought', 'sold', 'hodl', 'hold', 'holding', 'bag', 'bags',
-                        'price', 'chart', 'trading', 'trade', 'buy', 'sell',
-                        
-                        # General conversation
-                        'working hard', 'team working', 'soon', 'coming soon', 'update',
-                        'announcement', 'news', 'congrats', 'congratulations',
-                        'good job', 'nice work', 'awesome', 'great job', 'well done',
-                        
-                        # Questions (definitely not deployments)
-                        'when', 'why', 'how', 'what', 'where', 'is there', 'can you', 
-                        'will you', 'do you', 'does', 'are you', '?',
-                        
-                        # Support/help requests
-                        'help', 'support', 'issue', 'problem', 'error', 'bug',
-                        'explain', 'furthermore', 'please', 'thank you', 'thanks'
-                    ]
-                    
-                    text_lower = original_text.lower()
-                    is_conversation = any(indicator in text_lower for indicator in conversation_indicators)
-                    
-                    # Additional check: if $ symbol is far from @mention, it's likely conversation
-                    bot_pos = text_lower.find(f'@{self.bot_username.lower()}')
-                    first_dollar_pos = text_lower.find('$')
-                    
-                    if bot_pos >= 0 and first_dollar_pos >= 0:
-                        # If there are more than 20 characters between @mention and $, it's likely conversation
-                        distance = first_dollar_pos - (bot_pos + len(self.bot_username) + 1)
-                        if distance > 20:
-                            is_conversation = True
-                    
-                    if is_conversation:
-                        # This is clearly a conversation mention, not a deployment
-                        return None
-                    else:
-                        # Wrong format but MIGHT be trying to deploy (very rare case)
-                        return {
-                            'error': f'Wrong format! Use: @{self.bot_username} $SYMBOL or @{self.bot_username} $SYMBOL - Token Name',
-                            'error_type': 'wrong_format'
-                        }
+            # NO MATCH = IGNORE COMPLETELY
+            # Don't try to detect "attempted deployments" - just ignore everything else
+            self.logger.debug(f"No exact format match found in: {original_text[:100]}...")
             return None
         
         # Extract symbol from the match and convert to uppercase
@@ -1594,45 +1542,9 @@ You sent: Missing $"""
             
             # Handle different parse results
             if token_info is None:
-                # Not a deployment attempt (no $ symbol)
-                # Check if this looks like a deployment attempt before replying
-                cleaned_text = tweet_text.replace('@DeployOnKlik', '').strip().lower()
-                
-                # Only reply if they:
-                # 1. Used very explicit deployment keywords
-                # 2. The tweet is more than just a few words
-                
-                # MUCH more restrictive - only respond to clear deployment commands
-                explicit_deploy_commands = [
-                    'deploy ', ' deploy', 'create token', 'make token',
-                    'deploy my', 'launch my', 'create my'
-                ]
-                
-                # Question indicators that mean this is NOT a deployment attempt
-                question_indicators = [
-                    'when', 'why', 'how', 'what', 'where', 'is there', 'can you', 
-                    'will you', 'do you', 'does', 'thoughts', 'think about',
-                    'eta', 'estimate', '?', 'help', 'explain', 'furthermore'
-                ]
-                
-                # Check if it's clearly a question or conversation
-                is_question_or_conversation = any(indicator in cleaned_text for indicator in question_indicators)
-                
-                # Only look for VERY explicit deployment commands
-                has_deploy_command = any(command in cleaned_text for command in explicit_deploy_commands)
-                
-                # Must have explicit deployment command AND not be a question/conversation
-                if has_deploy_command and not is_question_or_conversation:
-                    error_msg = "❌ Invalid format. You MUST include $ before the symbol. Use: @DeployOnKlik $SYMBOL or @DeployOnKlik $SYMBOL - Token Name"
-                    
-                    # Send Twitter reply to help the user
-                    await self.send_twitter_reply_format_error(tweet_id, username, tweet_text)
-                    
-                    return error_msg
-                else:
-                    # This is just a conversation mention, ignore it
-                    self.logger.info(f"Ignoring conversation mention from @{username}: {tweet_text[:100]}")
-                    return "✅ Ignored - not a deployment request"
+                # Not a deployment attempt - just ignore completely
+                self.logger.info(f"Ignoring mention from @{username}: {tweet_text[:100]}")
+                return "✅ Ignored - not a deployment request"
             
             # Check if it's an error response
             elif 'error' in token_info:
